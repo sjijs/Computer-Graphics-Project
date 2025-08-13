@@ -8,7 +8,7 @@ class sphere : public hittable {
   public:
     sphere(const point3& center, double radius) : center(center), radius(std::fmax(0,radius)) {}
 
-    bool hit(const ray& r, double ray_tmin, double ray_tmax, hit_record& rec) const override {
+    bool hit(const ray& r, interval ray_t, hit_record& rec) const override {
         vec3 oc = center - r.origin();// 这里的center变量是类的成员变量
         auto a = r.direction().length_squared();
         auto h = dot(r.direction(), oc);
@@ -23,9 +23,9 @@ class sphere : public hittable {
         // 计算两个可能的交点
         // 如果第一个交点不在范围内，则计算第二个交点
         auto root = (h - sqrtd) / a;
-        if (root <= ray_tmin || ray_tmax <= root) {
+        if (!ray_t.surrounds(root)) {
             root = (h + sqrtd) / a;
-            if (root <= ray_tmin || ray_tmax <= root)
+            if (!ray_t.surrounds(root))
                 return false;
         }
 

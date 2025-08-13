@@ -305,3 +305,14 @@ normal = normalize(sign(x), sign(y), sign(z))
 | **八面体** | L1 距离（曼哈顿） | $\|x\| + \|y\| + \|z\| = F$ | 8个三角形面 |
 | **立方体** | L∞ 距离（切比雪夫） | $\max(\|x\|, \|y\|, \|z\|) = F$ | 6个正方形面 |
 | **球体** | L2 距离（欧几里得） | $x^2 + y^2 + z^2 = F^2$ | 1个曲面 |
+
+## shared_ptr<type>
+- shared_ptr<type> 是指向某个分配类型的指针，具有引用计数语义。
+- 每次将其值分配给另一个共享指针（通常使用简单赋值）时，引用计数都会递增。
+- 当共享指针超出范围（例如在块或函数的末尾）时，引用计数会递减。一旦计数变为零，对象就会被安全删除。
+- **初始化示例**
+```cpp
+shared_ptr<double> double_ptr = make_shared<double>(0.37);
+shared_ptr<vec3>   vec3_ptr   = make_shared<vec3>(1.414214, 2.718281, 1.618034);
+shared_ptr<sphere> sphere_ptr = make_shared<sphere>(point3(0,0,0), 1.0);
+```

@@ -10,7 +10,7 @@ class octahedron : public hittable {
   public:
     octahedron(const point3& center, double size) : center(center), size(std::fmax(0,size)) {}
 
-    bool hit(const ray& r, double ray_tmin, double ray_tmax, hit_record& rec) const override {
+    bool hit(const ray& r, interval ray_t, hit_record& rec) const override {
         // 计算 a_i = C_i - Q_i (八面体中心 - 射线起点)
         vec3 a = center - r.origin();
         vec3 d = r.direction();
@@ -57,7 +57,7 @@ class octahedron : public hittable {
             // 先检查候选点
             for (int i = 0; i < candidate_count; i++) {
                 double t = candidates[i];
-                if (t <= ray_tmin || t >= ray_tmax) continue; // 检查 t 值范围
+                if (!ray_t.surrounds(t)) continue; // 检查 t 值范围
                 
                 // 计算该点的 g(t) 值
                 double g_t = std::abs(a.x() - t * d.x()) + 
@@ -74,7 +74,7 @@ class octahedron : public hittable {
             
             // 如果没有找到合适的候选点，进行二分搜索
             if (best_t < 0) {
-                double left = ray_tmin, right = ray_tmax;
+                double left = ray_t.left(), right = ray_t.right();
                 for (int iter = 0; iter < 50; iter++) {
                     double mid = (left + right) / 2.0;
                     double g_mid = std::abs(a.x() - mid * d.x()) + 
@@ -92,13 +92,13 @@ class octahedron : public hittable {
                         left = mid;
                     }
                 }
-                if (best_t < 0 && left >= ray_tmin && right <= ray_tmax) {
+                if (best_t < 0 && left >= ray_t.left() && right <= ray_t.right()) {
                     best_t = (left + right) / 2.0;
                 }
             }
             
             // 如果找到了有效的交点
-            if (best_t > ray_tmin && best_t < ray_tmax) {
+            if (ray_t.surrounds(best_t)) {
                 rec.t = best_t;
                 rec.p = r.at(rec.t);
                 

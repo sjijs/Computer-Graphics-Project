@@ -1,7 +1,7 @@
 #ifndef HITTABLE_H
 #define HITTABLE_H
 
-#include "ray.h"
+#include "rtweekend.h"
 
 // hit_record 用于存储光线与物体交点的信息
 // 包括交点位置、法向量和交点的 t 值
@@ -29,7 +29,7 @@ class hittable {
   public:
     virtual ~hittable() = default;
 
-    virtual bool hit(const ray& r, double ray_tmin, double ray_tmax, hit_record& rec) const = 0;// const表示该方法不会修改类的成员变量
+    virtual bool hit(const ray& r, interval ray_t, hit_record& rec) const = 0;// const表示该方法不会修改类的成员变量
 };
 
 #endif
