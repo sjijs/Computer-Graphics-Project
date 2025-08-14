@@ -47,6 +47,16 @@ class vec3 {
     double length_squared() const {
         return e[0]*e[0] + e[1]*e[1] + e[2]*e[2];
     }
+
+    // 返回一个随机的vec3
+    static vec3 random() {
+        return vec3(random_double(), random_double(), random_double());
+    }
+
+    // 返回一个指定范围内的随机vec3
+    static vec3 random(double min, double max) {
+        return vec3(random_double(min,max), random_double(min,max), random_double(min,max));
+    }
 };
 
 // point3 is just an alias for vec3, but useful for geometric clarity in the code.
@@ -56,6 +66,7 @@ using point3 = vec3;
 
 // Vector Utility Functions
 // 这些函数用于向量的常见操作，如输出、加法、减法、乘法、除法等。
+// 使用内联函数的方式定义，以提高性能和可读性。
 
 inline std::ostream& operator<<(std::ostream& out, const vec3& v) {
     return out << v.e[0] << ' ' << v.e[1] << ' ' << v.e[2];
@@ -100,6 +111,23 @@ inline vec3 cross(const vec3& u, const vec3& v) {
 // 返回单位向量
 inline vec3 unit_vector(const vec3& v) {
     return v / v.length();
+}
+
+inline vec3 random_unit_vector() {
+    while (true) {
+        auto p = vec3::random(-1,1);
+        auto lensq = p.length_squared();
+        if (1e-160 < lensq && lensq <= 1)  // 防止浮点数精度问题，导致归一化产生“假向量”（[±∞,±∞,±∞]）
+            return p / sqrt(lensq);
+    }
+}
+
+inline vec3 random_on_hemisphere(const vec3& normal) {
+    vec3 on_unit_sphere = random_unit_vector();
+    if (dot(on_unit_sphere, normal) > 0.0) // In the same hemisphere as the normal
+        return on_unit_sphere;
+    else
+        return -on_unit_sphere;
 }
 
 #endif

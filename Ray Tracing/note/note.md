@@ -316,3 +316,304 @@ shared_ptr<double> double_ptr = make_shared<double>(0.37);
 shared_ptr<vec3>   vec3_ptr   = make_shared<vec3>(1.414214, 2.718281, 1.618034);
 shared_ptr<sphere> sphere_ptr = make_shared<sphere>(point3(0,0,0), 1.0);
 ```
+
+## camera类重构前主函数中绘制逻辑
+```cpp
+int main() {
+
+    // Image
+
+    auto aspect_ratio = 16.0 / 9.0;
+    int image_width = 400;
+
+    // Calculate the image height, and ensure that it's at least 1.
+    // 计算图像高度，并确保至少为1。
+    // 如果计算结果小于1，则将其设置为1。
+    int image_height = int(image_width / aspect_ratio);
+    image_height = (image_height < 1) ? 1 : image_height;
+
+    // World
+
+    hittable_list world;
+    world.add(make_shared<sphere>(point3(0.5,0,-1), 0.5));
+    world.add(make_shared<octahedron>(point3(-0.5,0,-1), 0.5));
+    world.add(make_shared<sphere>(point3(0,-100.5,-1), 100));
+
+    // Camera
+
+    // 视口是相机的可视区域，定义在实际物理空间中，与最终图像有映射关系
+    // image定义了最终图像的分辨率与像素
+    // 视口是实际物理空间中的一个矩形区域，而image是这个区域的采样结果。
+    auto focal_length = 1.0;// 相机焦距
+    auto viewport_height = 2.0;// 相机视口高度
+    auto viewport_width = viewport_height * (double(image_width)/image_height);// 相机视口宽度
+    auto camera_center = point3(0, 0, 0);// 相机中心位置
+
+    // Calculate the vectors across the horizontal and down the vertical viewport edges.
+    // 计算水平和垂直视口边缘的向量。
+    // 这些向量定义了相机视口的大小和方向。
+    auto viewport_u = vec3(viewport_width, 0, 0);
+    auto viewport_v = vec3(0, -viewport_height, 0);
+
+    // Calculate the horizontal and vertical delta vectors from pixel to pixel.
+    // 计算从一个像素到下一个像素的水平和垂直增量向量。
+    // 这些向量用于在视口上定位每个像素的位置。
+    auto pixel_delta_u = viewport_u / image_width;
+    auto pixel_delta_v = viewport_v / image_height;
+
+    // Calculate the location of the upper left pixel.
+    // 计算左上角像素的位置。
+    auto viewport_upper_left = camera_center - vec3(0, 0, focal_length) - viewport_u/2 - viewport_v/2;
+    // 计算左上角像素的中心位置。
+    // 这里的0.5是为了将像素中心对齐到视口的左上角。
+    auto pixel00_loc = viewport_upper_left + 0.5 * (pixel_delta_u + pixel_delta_v);
+
+    // 创建输出文件流
+    std::ofstream file("image_direct.ppm");
+    
+    // Render
+
+    file << "P3\n" << image_width << ' ' << image_height << "\n255\n";
+
+    for (int j = 0; j < image_height; j++) {
+        std::clog << "\r渲染进度: " << (image_height - j) << ' ' << std::flush;
+        for (int i = 0; i < image_width; i++) {
+            auto pixel_center = pixel00_loc + (i * pixel_delta_u) + (j * pixel_delta_v);
+            auto ray_direction = pixel_center - camera_center;
+            ray r(camera_center, ray_direction);// 创建从相机中心到像素中心的光线
+
+            color pixel_color = ray_color(r, world);// 获取光线颜色
+            write_color(file, pixel_color);// 使用 write_color 函数将颜色写入文件
+        }
+    }
+    
+    file.close();
+    std::clog << "\rDone.                 \n";
+    std::cout << "PPM file generated successfully!\n";
+    
+    return 0;
+}
+```
+
+## 抗锯齿技术详解
+
+### 抗锯齿的工作原理
+
+抗锯齿在光线追踪中通过**随机超采样的蒙特卡洛方法**实现：
+
+1. **多重采样**：在每个像素内部随机抖动采样多条光线
+2. **颜色累积**：将所有采样光线的颜色求和
+3. **平均化处理**：除以采样数量得到最终像素颜色
+
+```cpp
+// 核心抗锯齿代码
+for (int sample = 0; sample < samples_per_pixel; sample++) {
+    ray r = get_ray(i, j);  // 获取带随机偏移的光线
+    pixel_color += ray_color(r, world);  // 累积颜色
+}
+write_color(file, pixel_samples_scale * pixel_color);  // 平均化输出
+```
+
+### 随机采样实现
+
+```cpp
+vec3 sample_square() const {
+    // 返回[-0.5, 0.5]²单位正方形内的随机点
+    // 盒式滤波：将随机样本限定在以像素中心为中心、边长为1的正方形内
+    return vec3(random_double() - 0.5, random_double() - 0.5, 0);
+}
+
+ray get_ray(int i, int j) const {
+    auto offset = sample_square();  // 随机偏移
+    auto pixel_sample = pixel00_loc 
+                      + ((i + offset.x()) * pixel_delta_u)
+                      + ((j + offset.y()) * pixel_delta_v);
+    
+    return ray(center, pixel_sample - center);
+}
+```
+
+### 抗锯齿原理
+
+- **系统性误差转化**：将锯齿的系统性误差转换为可收敛的噪声
+- **采样数量影响**：采样越多，噪声越低，边缘越平滑
+- **滤波类型**：当前实现为均匀盒式滤波（box filter）
+
+### 改进建议：分层采样
+
+为了在相同采样数下获得更好的效果，可以使用分层采样：
+
+```cpp
+// 分层采样实现
+vec3 sample_square_stratified(int sample_index, int spp) const {
+    int n = int(std::ceil(std::sqrt(double(spp))));
+    int sx = sample_index % n;
+    int sy = sample_index / n;
+    double jx = (sx + random_double()) / n;  // [0,1)
+    double jy = (sy + random_double()) / n;  // [0,1)
+    return vec3(jx - 0.5, jy - 0.5, 0);
+}
+```
+
+## 全局光照与"阴影"现象
+
+### 观察到的现象
+
+在光线追踪渲染中，即使没有明确的阴影计算，某些区域仍会呈现出"阴影"效果。这是**全局光照**的自然结果。
+
+### 物理原理解释
+
+#### 1. 间接光照的衰减
+```cpp
+// 漫反射材质中的能量衰减
+color attenuation = albedo;  // 材质吸收部分光线
+return attenuation * ray_color(scattered, world, depth-1);
+```
+
+每次光线与表面交互都会损失能量，深度越深的区域光强度越弱。
+
+#### 2. 几何遮挡效应
+- **直接可见表面**：摄像机 → 表面（1次反射）
+- **凹陷区域**：摄像机 → 表面1 → 表面2 → ... → 凹陷表面（多次反射）
+
+#### 3. 环境光遮蔽（Ambient Occlusion）
+被其他几何体包围的区域接收到的环境光较少，自然显得更暗。
+
+### 全局光照的数学模型
+
+```cpp
+color ray_color(const ray& r, int depth, const hittable& world) const {
+    if (depth <= 0) return color(0,0,0);  // 递归深度限制
+    
+    hit_record rec;
+    if (world.hit(r, interval(0.001, infinity), rec)) {
+        ray scattered;
+        color attenuation;
+        if (rec.mat->scatter(r, rec, attenuation, scattered)) {
+            // 递归计算间接光照，每次反射都有能量衰减
+            return attenuation * ray_color(scattered, world, depth-1);
+        }
+        return color(0,0,0);
+    }
+    
+    // 背景/天空光作为最终光源
+    return background_color;
+}
+```
+
+### 物理现象的成因
+
+1. **朗伯反射定律**：漫反射表面按余弦分布散射光线
+2. **能量守恒**：每次反射都会损失能量（attenuation < 1.0）  
+3. **路径积分**：最终像素颜色是所有光线路径贡献的积分
+
+### 与传统阴影的区别
+
+| 类型 | 传统阴影 | 全局光照"阴影" |
+|------|----------|----------------|
+| **成因** | 直接光源被遮挡 | 间接光衰减 |
+| **边界** | 明确的明暗分界 | 连续渐变 |
+| **计算** | 阴影射线检测 | 多次反射累积 |
+
+## 深度可视化技术
+
+### 深度可视化的意义
+
+深度可视化可以帮助理解：
+- 光线在场景中的传播路径
+- 不同区域需要的反射次数
+- 全局光照的复杂性分布
+
+### 实现方法
+
+```cpp
+color ray_color_depth_vis(const ray& r, int depth, const hittable& world) const {
+    if (depth <= 0)
+        return color(1, 0, 0);  // 红色表示达到最大深度
+
+    hit_record rec;
+    if (world.hit(r, interval(0.001, infinity), rec)) {
+        // 用反弹次数计算深度可视化
+        int bounce_count = max_depth - depth;
+        double depth_ratio = double(bounce_count) / double(max_depth);
+        
+        // 深度颜色映射
+        color depth_color = depth_visualization(depth_ratio);
+        
+        // 继续递归
+        vec3 direction = random_on_hemisphere(rec.normal);
+        ray_color_depth_vis(ray(rec.p, direction), depth-1, world);
+        
+        return depth_color;  // 返回深度可视化颜色
+    }
+
+    return color(0, 0, 1);  // 蓝色背景表示直接击中背景
+}
+```
+
+### 深度颜色映射策略
+
+```cpp
+// 彩虹色谱映射
+color depth_visualization(double bounce_ratio) const {
+    if (bounce_ratio < 0.2) {
+        // 初始击中：白色到黄色
+        double t = bounce_ratio / 0.2;
+        return (1.0-t) * color(1, 1, 1) + t * color(1, 1, 0);
+    } else if (bounce_ratio < 0.4) {
+        // 黄色到绿色  
+        double t = (bounce_ratio - 0.2) / 0.2;
+        return (1.0-t) * color(1, 1, 0) + t * color(0, 1, 0);
+    } else if (bounce_ratio < 0.6) {
+        // 绿色到青色
+        double t = (bounce_ratio - 0.4) / 0.2;
+        return (1.0-t) * color(0, 1, 0) + t * color(0, 1, 1);
+    } else if (bounce_ratio < 0.8) {
+        // 青色到蓝色
+        double t = (bounce_ratio - 0.6) / 0.2;
+        return (1.0-t) * color(0, 1, 1) + t * color(0, 0, 1);
+    } else {
+        // 蓝色到红色（深层反弹）
+        double t = (bounce_ratio - 0.8) / 0.2;
+        return (1.0-t) * color(0, 0, 1) + t * color(1, 0, 0);
+    }
+}
+```
+
+### 为什么简单几何体需要多次反弹？
+
+即使是简单的球体，也存在需要多次光线反弹才能被"照亮"的区域：
+
+1. **凹陷区域**：球体底部需要天空→球体表面→底部的间接光照
+2. **相互遮挡**：多个物体间的接触区域  
+3. **环境光遮蔽**：被其他几何体"包围"的区域接收环境光较少
+
+### 验证实验
+
+```cpp
+// 观察不同深度的贡献
+color ray_color_debug(const ray& r, int depth, const hittable& world) const {
+    if (depth <= 0)
+        return color(0.1, 0.1, 0.1);  // 给最大深度一点灰色
+
+    hit_record rec;
+    if (world.hit(r, interval(0.001, infinity), rec)) {
+        vec3 direction = random_on_hemisphere(rec.normal);
+        
+        // 不同深度使用不同的衰减系数
+        double attenuation = 0.7;  // 可以调整：0.3, 0.5, 0.9
+        
+        color bounce_color = ray_color_debug(ray(rec.p, direction), depth-1, world);
+        
+        // 输出调试信息
+        if (depth == max_depth) {
+            std::clog << "First hit\n";
+        } else if (depth == max_depth - 1) {
+            std::clog << "Second bounce\n";
+        }
+        
+        return attenuation * bounce_color;
+    }
+
+    return background_color;
+}
