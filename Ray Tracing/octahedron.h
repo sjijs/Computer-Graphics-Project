@@ -8,7 +8,8 @@
 
 class octahedron : public hittable {
   public:
-    octahedron(const point3& center, double size) : center(center), size(std::fmax(0,size)) {}
+    octahedron(const point3& center, double size, shared_ptr<material> mat)
+      : center(center), size(std::fmax(0,size)), mat(mat) {}
 
     bool hit(const ray& r, interval ray_t, hit_record& rec) const override {
         // 计算 a_i = C_i - Q_i (八面体中心 - 射线起点)
@@ -112,6 +113,7 @@ class octahedron : public hittable {
                 
                 // 使用 set_face_normal 方法设置正确的法向量方向
                 rec.set_face_normal(r, outward_normal);
+                rec.mat = mat; // 设置材质
                 
                 return true;
             }
@@ -123,6 +125,7 @@ class octahedron : public hittable {
   private:
     point3 center;
     double size;
+    shared_ptr<material> mat;
 };
 
 #endif

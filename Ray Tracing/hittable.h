@@ -3,12 +3,16 @@
 
 #include "rtweekend.h"
 
+class material;// 防止循环引用的前向声明
+
 // hit_record 用于存储光线与物体交点的信息
 // 包括交点位置、法向量和交点的 t 值
 class hit_record {
   public:
     point3 p;
     vec3 normal;
+    shared_ptr<material> mat;  // 材质指针，在初始化物体时给予相对应材质属性，当 ray_color()函数获得hit_record时
+                               // 它可以调用材质指针的成员函数来找出散射的光线（如果有）。
     double t;
     bool front_face;
 
