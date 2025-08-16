@@ -4,119 +4,75 @@
 #include "hittable.h"
 #include "vec3.h"
 #include <cmath>
-#include <limits>
 
 class octahedron : public hittable {
   public:
     octahedron(const point3& center, double size, shared_ptr<material> mat)
-      : center(center), size(std::fmax(0,size)), mat(mat) {}
+      : center(center), radius(size/2.0), mat(mat) {}
 
     bool hit(const ray& r, interval ray_t, hit_record& rec) const override {
-        // 计算 a_i = C_i - Q_i (八面体中心 - 射线起点)
-        vec3 a = center - r.origin();
+        // 使用八面体的隐式方程：|x| + |y| + |z| = radius
+        // 转换为射线参数方程求解
+        
+        vec3 oc = r.origin() - center;
         vec3 d = r.direction();
         
-        // 存储零点候选值
-        double candidates[6];
-        int candidate_count = 0;
+        // 我们需要求解 |oc.x + t*d.x| + |oc.y + t*d.y| + |oc.z + t*d.z| = radius
+        // 这需要分情况讨论，根据射线方向和起点位置的符号
         
-        // 计算三个分量的零点 t_i = a_i / d_i (当 d_i != 0 时)
-        for (int i = 0; i < 3; i++) {
-            if (std::abs(d[i]) > 1e-8) { // 避免除零
-                candidates[candidate_count++] = a[i] / d[i];
+        double best_t = -1.0;
+        vec3 best_normal;
+        
+        // 八面体有8个面，每个面对应不同的符号组合
+        for (int sx = -1; sx <= 1; sx += 2) {
+            for (int sy = -1; sy <= 1; sy += 2) {
+                for (int sz = -1; sz <= 1; sz += 2) {
+                    // 对于当前符号组合，线性方程为：
+                    // sx*(oc.x + t*d.x) + sy*(oc.y + t*d.y) + sz*(oc.z + t*d.z) = radius
+                    
+                    double a = sx * d.x() + sy * d.y() + sz * d.z();
+                    double b = sx * oc.x() + sy * oc.y() + sz * oc.z() - radius;
+                    
+                    if (std::abs(a) > 1e-8) {
+                        double t = -b / a;
+                        
+                        if (ray_t.contains(t) && (best_t < 0 || t < best_t)) {
+                            // 检查这个t值对应的点是否确实在对应的面上
+                            point3 hit_point = r.at(t);
+                            vec3 local_point = hit_point - center;
+                            
+                            // 检查符号是否匹配
+                            bool valid = true;
+                            if (sx > 0 && local_point.x() < -1e-6) valid = false;
+                            if (sx < 0 && local_point.x() > 1e-6) valid = false;
+                            if (sy > 0 && local_point.y() < -1e-6) valid = false;
+                            if (sy < 0 && local_point.y() > 1e-6) valid = false;
+                            if (sz > 0 && local_point.z() < -1e-6) valid = false;
+                            if (sz < 0 && local_point.z() > 1e-6) valid = false;
+                            
+                            // 检查是否真的在八面体表面上
+                            double surface_dist = std::abs(local_point.x()) + 
+                                                 std::abs(local_point.y()) + 
+                                                 std::abs(local_point.z());
+                            
+                            if (valid && std::abs(surface_dist - radius) < 1e-6) {
+                                best_t = t;
+                                // 计算该面的法向量
+                                best_normal = vec3(sx, sy, sz);
+                                best_normal = unit_vector(best_normal);
+                            }
+                        }
+                    }
+                }
             }
         }
         
-        // 添加两个远端点进行比较
-        candidates[candidate_count++] = -1000.0; // 负无穷的近似
-        candidates[candidate_count++] = 1000.0;  // 正无穷的近似
-        
-        // 计算 F = size/2 (八面体的半边长)
-        double F = size / 2.0;
-        
-        // 寻找 g(t) 的最小值
-        double g_min = std::numeric_limits<double>::max();
-        
-        for (int i = 0; i < candidate_count; i++) {
-            double t = candidates[i];
-            
-            // 计算 g(t) = |a_x - t*d_x| + |a_y - t*d_y| + |a_z - t*d_z|
-            double g_t = std::abs(a.x() - t * d.x()) + 
-                         std::abs(a.y() - t * d.y()) + 
-                         std::abs(a.z() - t * d.z());
-            
-            if (g_t < g_min) {
-                g_min = g_t;
-            }
-        }
-        
-        // 判断是否有解：F >= g_min
-        if (F >= g_min) {
-            // 找到使 g(t) = F 的 t 值
-            double best_t = -1.0;
-            
-            // 先检查候选点
-            for (int i = 0; i < candidate_count; i++) {
-                double t = candidates[i];
-                if (!ray_t.surrounds(t)) continue; // 检查 t 值范围
-                
-                // 计算该点的 g(t) 值
-                double g_t = std::abs(a.x() - t * d.x()) + 
-                             std::abs(a.y() - t * d.y()) + 
-                             std::abs(a.z() - t * d.z());
-                
-                // 如果这个点在八面体表面上或内部
-                if (g_t <= F + 1e-6) {
-                    if (best_t < 0 || t < best_t) {
-                        best_t = t;
-                    }
-                }
-            }
-            
-            // 如果没有找到合适的候选点，进行二分搜索
-            if (best_t < 0) {
-                double left = ray_t.left(), right = ray_t.right();
-                for (int iter = 0; iter < 50; iter++) {
-                    double mid = (left + right) / 2.0;
-                    double g_mid = std::abs(a.x() - mid * d.x()) + 
-                                   std::abs(a.y() - mid * d.y()) + 
-                                   std::abs(a.z() - mid * d.z());
-                    
-                    if (std::abs(g_mid - F) < 1e-6) {
-                        best_t = mid;
-                        break;
-                    }
-                    
-                    if (g_mid > F) {
-                        right = mid;
-                    } else {
-                        left = mid;
-                    }
-                }
-                if (best_t < 0 && left >= ray_t.left() && right <= ray_t.right()) {
-                    best_t = (left + right) / 2.0;
-                }
-            }
-            
-            // 如果找到了有效的交点
-            if (ray_t.surrounds(best_t)) {
-                rec.t = best_t;
-                rec.p = r.at(rec.t);
-                
-                // 计算八面体的外向法向量
-                vec3 local_point = rec.p - center;
-                vec3 outward_normal;
-                outward_normal.e[0] = (local_point.x() >= 0) ? 1.0 : -1.0;
-                outward_normal.e[1] = (local_point.y() >= 0) ? 1.0 : -1.0;
-                outward_normal.e[2] = (local_point.z() >= 0) ? 1.0 : -1.0;
-                outward_normal = unit_vector(outward_normal);
-                
-                // 使用 set_face_normal 方法设置正确的法向量方向
-                rec.set_face_normal(r, outward_normal);
-                rec.mat = mat; // 设置材质
-                
-                return true;
-            }
+        if (best_t > 0) {
+            rec.t = best_t;
+            rec.p = r.at(rec.t);
+            rec.set_face_normal(r, best_normal);
+            rec.mat = mat;
+            return true;
         }
         
         return false;
@@ -124,7 +80,7 @@ class octahedron : public hittable {
 
   private:
     point3 center;
-    double size;
+    double radius;
     shared_ptr<material> mat;
 };
 
