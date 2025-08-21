@@ -5,6 +5,7 @@
 #include "material.h"
 #include <fstream>
 #include <string>
+#include <algorithm>
 
 class camera {
   public:
@@ -23,9 +24,34 @@ class camera {
 
 
     std::string output_filename = "output.ppm";  // Output PPM filename
+    std::string skybox_filename = "skybox.ppm";
+
+    bool load_skybox(const std::string& filename) {
+        std::ifstream file(filename, std::ios::binary);
+        if (!file) return false;
+
+        std::string magic;
+        file >> magic;
+        if (magic != "P6") return false;
+
+        int maxval;
+        file >> skybox_width >> skybox_height >> maxval;
+        file.ignore(1); // 跳过换行
+
+        skybox_data.resize(skybox_width * skybox_height * 3);
+        file.read(reinterpret_cast<char*>(skybox_data.data()), skybox_data.size());
+        file.close();
+        return true;
+    }
+
 
     void render(const hittable& world) {
         initialize();
+
+        // 加载天空盒一次
+        if (!load_skybox(skybox_filename)) {
+            std::cerr << "Warning: Skybox not loaded, fallback to gradient.\n";
+        }
 
         // 创建输出文件流
         std::ofstream file(output_filename);
@@ -72,6 +98,11 @@ class camera {
     vec3   u, v, w;              // Camera frame basis vectors
     vec3   defocus_disk_u;       // Defocus disk horizontal radius
     vec3   defocus_disk_v;       // Defocus disk vertical radius
+
+    // --- 天空盒数据 ---
+    int skybox_width = 0;
+    int skybox_height = 0;
+    std::vector<unsigned char> skybox_data; // RGB 数据
 
     void initialize() {
         image_height = int(image_width / aspect_ratio);
@@ -141,6 +172,57 @@ class camera {
         return center + (p[0] * defocus_disk_u) + (p[1] * defocus_disk_v);
     }
 
+    color sample_skybox(vec3 direction) const {
+        if (skybox_data.empty()) {
+            // fallback：蓝白渐变
+            vec3 unit_direction = unit_vector(direction);
+            auto a = 0.5*(unit_direction.y() + 1.0);
+            return (1.0-a)*color(1.0, 1.0, 1.0) + a*color(0.5, 0.7, 1.0);
+        }
+
+        // 归一化方向向量
+        vec3 unit_direction = unit_vector(direction);
+        double x = unit_direction.x();
+        double y = unit_direction.y();
+        double z = unit_direction.z();
+
+        // 球面坐标映射 - 修正版本
+        // theta: 从+Y轴测量的极角 (0到π)
+        // phi: 从+X轴测量的方位角 (-π到π)
+        double theta = acos(std::clamp(y, -1.0, 1.0));
+        double phi = atan2(z, x);
+        
+        // 将phi从[-π,π]映射到[0,1]
+        double u = (phi + pi) / (2.0 * pi);
+        // 将theta从[0,π]映射到[0,1] 
+        double v = theta / pi;
+        
+        // 边界检查和环绕处理
+        u = u - std::floor(u);  // 确保u在[0,1)范围内，等价于fmod(u + 1.0, 1.0)
+        v = std::clamp(v, 0.0, 1.0);  // 确保v在[0,1]范围内
+        
+        // 转换为像素坐标
+        int i = static_cast<int>(u * skybox_width);
+        int j = static_cast<int>(v * skybox_height);
+        
+        // 边界保护
+        i = std::clamp(i, 0, skybox_width - 1);
+        j = std::clamp(j, 0, skybox_height - 1);
+
+        // 计算索引并返回颜色
+        int idx = (j * skybox_width + i) * 3;
+        if (idx + 2 < static_cast<int>(skybox_data.size())) {
+            return color(
+                skybox_data[idx]   / 255.0,
+                skybox_data[idx+1] / 255.0,
+                skybox_data[idx+2] / 255.0
+            );
+        } else {
+            // 如果索引越界，返回渐变背景
+            auto a = 0.5*(y + 1.0);
+            return (1.0-a)*color(1.0, 1.0, 1.0) + a*color(0.5, 0.7, 1.0);
+        }
+    }
 
     color ray_color(const ray& r, int depth, const hittable& world) const {
         // If we've exceeded the ray bounce limit, no more light is gathered.
@@ -163,10 +245,14 @@ class camera {
             // 最终像素颜色是所有光线路径贡献的积分
         }
 
-        // 背景色渐变
+        // // 背景色渐变
+        // vec3 unit_direction = unit_vector(r.direction());
+        // auto a = 0.5*(unit_direction.y() + 1.0);
+        // return (1.0-a)*color(1.0, 1.0, 1.0) + a*color(0.5, 0.7, 1.0);
+
+        // 采样天空盒
         vec3 unit_direction = unit_vector(r.direction());
-        auto a = 0.5*(unit_direction.y() + 1.0);
-        return (1.0-a)*color(1.0, 1.0, 1.0) + a*color(0.5, 0.7, 1.0);
+        return sample_skybox(unit_direction);
     }
     /*
     这段程序的逻辑是实现光线追踪的基本步骤：

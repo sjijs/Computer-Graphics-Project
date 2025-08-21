@@ -76,8 +76,8 @@ int main() {
     auto fuzzy_metal = make_shared<metal>(color(0.8, 0.3, 0.3), 0.3);
     world.add(make_shared<octahedron>(point3(2, 0.5, 2), 1.0, fuzzy_metal));
 
-    // 后方：亮绿色漫反射八面体
-    auto green_material = make_shared<lambertian>(color(0.2, 0.8, 0.2));
+    // 后方：玻璃八面体
+    auto green_material = make_shared<dielectric>(1.5);
     world.add(make_shared<octahedron>(point3(0, 0.8, -3), 1.6, green_material));
 
     camera cam;
@@ -87,15 +87,18 @@ int main() {
     cam.samples_per_pixel = 50; // 每个像素的随机样本数，这里的随机采样不只可以实现抗锯齿，还可以实现漫反射材质表面的真实样子
     // 如果随机样本数足够多，最终渲染出来的图像会更加平滑和真实
     // 反之如果该样本数为1，渲染出来的图像会出现明显的锯齿和噪点
-    cam.max_depth = 50;  // 最大反弹次数
+    cam.max_depth = 10;  // 最大反弹次数
 
-    cam.vfov     = 20;
+    cam.vfov     = 35;
     cam.lookfrom = point3(13,2,3);
     cam.lookat   = point3(0,0,0);
     cam.vup      = vec3(0,1,0);
 
     cam.defocus_angle = 0.6;
     cam.focus_dist    = 10.0;
+    
+    // 设置天空盒文件名
+    cam.skybox_filename = "skybox.ppm";
 
     cam.render(world);
 }
