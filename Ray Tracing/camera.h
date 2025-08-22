@@ -3,6 +3,7 @@
 
 #include "hittable.h"
 #include "material.h"
+#include "spherical_harmonics.h"
 #include <fstream>
 #include <string>
 #include <algorithm>
@@ -24,8 +25,12 @@ class camera {
 
 
     std::string output_filename = "output.ppm";  // Output PPM filename
-    std::string skybox_filename = "skybox.ppm";
+    std::string skybox_filename = "skybox.ppm";  // 天空盒贴图文件名
 
+    std::string sh_coeffs_filename = "skybox_sh.txt";  // 球谐系数文件名
+    bool use_spherical_harmonics = true;
+
+    // 天空盒贴图读取（贴图式全局光照）
     bool load_skybox(const std::string& filename) {
         std::ifstream file(filename, std::ios::binary);
         if (!file) return false;
@@ -51,6 +56,16 @@ class camera {
         // 加载天空盒一次
         if (!load_skybox(skybox_filename)) {
             std::cerr << "Warning: Skybox not loaded, fallback to gradient.\n";
+        }
+
+                // 初始化球谐函数
+        if (use_spherical_harmonics) {
+            if (!sh_lighting.loadCoefficients(sh_coeffs_filename)) {
+                std::cerr << "警告: 无法加载球谐系数，使用默认环境光" << std::endl;
+                use_spherical_harmonics = false;
+            } else {
+                std::cout << "已加载球谐函数环境光照" << std::endl;
+            }
         }
 
         // 创建输出文件流
@@ -98,6 +113,9 @@ class camera {
     vec3   u, v, w;              // Camera frame basis vectors
     vec3   defocus_disk_u;       // Defocus disk horizontal radius
     vec3   defocus_disk_v;       // Defocus disk vertical radius
+
+    // 球谐函数对象
+    SphericalHarmonics sh_lighting{3};  // 3阶球谐函数
 
     // --- 天空盒数据 ---
     int skybox_width = 0;
@@ -250,9 +268,16 @@ class camera {
         // auto a = 0.5*(unit_direction.y() + 1.0);
         // return (1.0-a)*color(1.0, 1.0, 1.0) + a*color(0.5, 0.7, 1.0);
 
-        // 采样天空盒
-        vec3 unit_direction = unit_vector(r.direction());
-        return sample_skybox(unit_direction);
+        // 使用球谐函数计算环境光照
+        if (use_spherical_harmonics) {
+            // 采样天空盒*球谐函数*
+            vec3 unit_direction = unit_vector(r.direction());
+            return sh_lighting.evaluate(unit_direction);
+        } else {
+            // 采样天空盒*环境光贴图*
+            vec3 unit_direction = unit_vector(r.direction());
+            return sample_skybox(unit_direction);
+        }
     }
     /*
     这段程序的逻辑是实现光线追踪的基本步骤：

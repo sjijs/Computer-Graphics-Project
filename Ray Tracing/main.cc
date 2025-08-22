@@ -12,6 +12,10 @@
 #include "octahedron.h"
 
 int main() {
+    SphericalHarmonics sh_lighting(3);
+    sh_lighting.generateFromEnvironmentMap("skybox.ppm");
+    sh_lighting.saveCoefficients("skybox_sh.txt");
+
     hittable_list world;
 
     // 添加地面 - 大球体作为地面
@@ -87,7 +91,7 @@ int main() {
     cam.samples_per_pixel = 50; // 每个像素的随机样本数，这里的随机采样不只可以实现抗锯齿，还可以实现漫反射材质表面的真实样子
     // 如果随机样本数足够多，最终渲染出来的图像会更加平滑和真实
     // 反之如果该样本数为1，渲染出来的图像会出现明显的锯齿和噪点
-    cam.max_depth = 10;  // 最大反弹次数
+    cam.max_depth = 50;  // 最大反弹次数
 
     cam.vfov     = 35;
     cam.lookfrom = point3(13,2,3);
@@ -96,7 +100,10 @@ int main() {
 
     cam.defocus_angle = 0.6;
     cam.focus_dist    = 10.0;
-    
+
+    cam.sh_coeffs_filename = "skybox_sh.txt";
+    cam.use_spherical_harmonics = true;
+
     // 设置天空盒文件名
     cam.skybox_filename = "skybox.ppm";
 
