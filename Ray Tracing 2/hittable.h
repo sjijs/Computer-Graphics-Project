@@ -2,6 +2,7 @@
 #define HITTABLE_H
 
 #include "rtweekend.h"
+#include "aabb.h"
 
 class material;// 防止循环引用的前向声明
 
@@ -34,6 +35,8 @@ class hittable {
     virtual ~hittable() = default;
 
     virtual bool hit(const ray& r, interval ray_t, hit_record& rec) const = 0;// const表示该方法不会修改类的成员变量
+
+    virtual aabb bounding_box() const = 0;
 };
 
 #endif

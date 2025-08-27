@@ -946,3 +946,540 @@ $$
 
 * **折射率 $n$** → 材料固有的
 * **反射率 $R$** → 由两个材料的折射率 + 入射角 + 偏振 + 波长共同决定，不是单纯的介质常量
+
+## BVH
+- **BVH算法核心为树，如果没有击中父节点，那么肯定也不会击中子节点，所以这也是BVH会加速运算的原因**
+
+## 关于BVH与多态
+
+### 问：
+我正在学习光线追踪的BVH相关技术，但看完教程后总感觉有些混乱，我想让你帮我梳理一下思路。 现在我理解的是在hittable的派生类中构造对象时按照自己的大小构造了相关的包围盒，然后逐层将其融合起来形成一棵树，但是其中的逻辑我还是有些混乱，请你清晰得按照该代码为我梳理一下整个流程
+
+### 答：
+太好了，你已经走到 **BVH (Bounding Volume Hierarchy)** 这一步了，这是光线追踪加速的关键。你给的 `bvh_node` 实现就是 Peter Shirley *Ray Tracing: The Next Week* 中的经典写法。我来按照代码的逻辑，从整体到细节，给你**逐层清晰梳理**一下。
+
+---
+
+# 📌 1. BVH 的核心思想
+
+* 在场景中，物体数量可能成百上千，若每条光线都对每个物体做求交检测，开销是 $O(N)$。
+* BVH 的思路：
+
+  1. 给物体包上简单的 **AABB 包围盒**。
+  2. 将物体递归地划分成左右两组，每一组再构造自己的包围盒。
+  3. 最终形成一棵树（每个节点有一个 AABB，叶子节点是具体物体）。
+* 光线求交时：
+
+  * 先检查光线是否与 **节点的 AABB 相交**；如果不相交，直接跳过整个子树；
+  * 若相交，再进入子节点检测，直到叶子节点，再做具体物体的求交。
+    👉 这样复杂度从 $O(N)$ 降到 $O(\log N)$ 左右。
+
+---
+
+# 📌 2. 构造 BVH 的流程（对应构造函数代码）
+
+你贴的 `bvh_node` 的逻辑是这样的：
+
+### （1）计算当前范围内的包围盒
+
+```cpp
+bbox = aabb::empty;
+for (size_t object_index=start; object_index < end; object_index++)
+    bbox = aabb(bbox, objects[object_index]->bounding_box());
+```
+
+* 遍历 `[start, end)` 范围内的所有物体，得到它们的 AABB。
+* 然后用 `aabb(bbox, obj_bbox)` 合并起来，形成当前节点的总包围盒。
+  👉 这个 `bbox` 就是**当前 BVH 节点的空间范围**。
+
+---
+
+### （2）选择分割轴
+
+```cpp
+int axis = bbox.longest_axis();
+```
+
+* 找到当前 `bbox` 在 x/y/z 中 **最长的轴**（例如 x）。
+* 在这个轴上，把物体排序，这样可以尽量把物体分布均匀划分成左右两组。
+
+---
+
+### （3）判断物体数量（递归出口）
+
+```cpp
+size_t object_span = end - start;
+
+if (object_span == 1) {
+    left = right = objects[start];
+} else if (object_span == 2) {
+    left = objects[start];
+    right = objects[start+1];
+}
+```
+
+* 如果只有一个物体：左右子树都指向它。
+* 如果有两个物体：左边一个，右边一个。
+  👉 这就是 **递归的出口条件**。
+
+---
+
+### （4）递归划分
+
+```cpp
+else {
+    std::sort(std::begin(objects) + start, std::begin(objects) + end, comparator);
+
+    auto mid = start + object_span/2;
+    left = make_shared<bvh_node>(objects, start, mid);
+    right = make_shared<bvh_node>(objects, mid, end);
+}
+```
+
+* 否则：先在选定的轴上排序，然后从中间位置 `mid` 一分为二。
+* 递归调用 `bvh_node` 构造子树。
+  👉 直到最后所有叶子节点都是具体的 `hittable` 对象。
+
+---
+
+# 📌 3. 光线求交流程（`hit` 函数）
+
+```cpp
+bool hit(const ray& r, interval ray_t, hit_record& rec) const override {
+    if (!bbox.hit(r, ray_t))
+        return false;   // 光线没击中这个包围盒 → 整个子树跳过
+
+    bool hit_left = left->hit(r, ray_t, rec);
+    bool hit_right = right->hit(r, interval(ray_t.min, hit_left ? rec.t : ray_t.max), rec);
+
+    return hit_left || hit_right;
+}
+```
+
+### 步骤解释：
+
+1. **先测当前节点的包围盒**：
+
+   * 如果光线没击中，整棵子树直接剪枝。
+
+2. **递归检查左子树**：
+
+   * 如果击中，`rec.t` 会被更新为最近的交点距离。
+
+3. **检查右子树**：
+
+   * 如果左边已经有交点，那么右边的 `ray_t.max` 只取到左边交点的距离（这样右边如果更远的交点就不会被考虑，保证返回最近交点）。
+
+4. **返回是否击中任意一个子树**。
+
+👉 这个逻辑确保了：
+
+* 剪枝：大幅减少求交次数。
+* 最近优先：保证始终找到最近的交点。
+
+---
+
+# 📌 4. 总结：整个 BVH 流程（从对象到渲染）
+
+1. **每个 hittable 对象**（球体、三角形等）自己能返回一个包围盒。
+2. **构造 BVH**：
+
+   * 从整个对象集合开始；
+   * 算出总包围盒 → 找最长轴 → 排序 → 分裂 → 递归；
+   * 最终形成一棵树，每个节点一个 `bbox`，叶子节点是物体本身。
+3. **渲染时**：
+
+   * 发射光线 → 从根节点 `hit` 开始；
+   * 先检测 AABB → 若相交再递归检测子节点；
+   * 直到叶子节点，才真正和物体做求交。
+     👉 整个过程相当于：**用一棵树组织物体，快速剪枝无效的求交检测**。
+
+---
+
+💡 可以这样直观理解：
+
+* **构建 BVH** = “把一堆物体装进一棵递归的分区盒子树里”
+* **光线求交** = “先问大盒子：光线打中了吗？如果打中再拆开小盒子继续问，直到问到具体物体”。
+
+---
+
+要不要我给你画一个 **BVH 构造和光线求交的流程图**，这样比文字更直观？
+
+### 问：
+std::sort(std::begin(objects) + start, std::begin(objects) + end, comparator);是如何作用的？为什么传入comparator就能按照制定轴排列，而且mid是如何获取到哪个才是中间的物体？
+
+### 答：
+这个问题问得非常好 👍，其实你已经抓到 **BVH 核心的关键点**了：物体怎么按照某个轴来排序，以及中间位置的划分是怎么起作用的。我们分开来看：
+
+---
+
+## 📌 1. `std::sort` 的工作机制
+
+```cpp
+std::sort(std::begin(objects) + start, 
+          std::begin(objects) + end, 
+          comparator);
+```
+
+* `std::sort` 是 C++ STL 的排序函数，第三个参数 `comparator` 是一个 **比较函数**。
+* 当 `std::sort` 在排序两个元素 `a` 和 `b` 时，它会调用：
+
+  ```cpp
+  comparator(a, b)
+  ```
+
+  如果返回 `true`，则说明 `a` 应该排在 `b` 前面。
+
+👉 这样，传入不同的 `comparator` 就可以改变排序规则。
+
+---
+
+## 📌 2. comparator 的定义（按照指定轴）
+
+在你的代码里：
+
+```cpp
+static bool box_compare(
+    const shared_ptr<hittable> a, const shared_ptr<hittable> b, int axis_index
+) {
+    auto a_axis_interval = a->bounding_box().axis_interval(axis_index);
+    auto b_axis_interval = b->bounding_box().axis_interval(axis_index);
+    return a_axis_interval.min < b_axis_interval.min;
+}
+```
+
+这里逻辑是：
+
+1. 每个物体都有一个 `bounding_box()`，返回它的 AABB。
+2. `axis_interval(axis_index)` 会取出包围盒在某个坐标轴上的范围（比如 X 轴上的 `[x_min, x_max]`）。
+3. `a_axis_interval.min < b_axis_interval.min` → 就是比较两个物体在该轴上的**起始位置**，小的排前面。
+
+然后在构造函数里根据 `axis` 选择比较函数：
+
+```cpp
+auto comparator = (axis == 0) ? box_x_compare
+                : (axis == 1) ? box_y_compare
+                : box_z_compare;
+```
+
+* 如果最长轴是 X，就用 `box_x_compare`；
+* 如果最长轴是 Y，就用 `box_y_compare`；
+* 如果最长轴是 Z，就用 `box_z_compare`。
+
+👉 这样，物体就会按照 **在该轴上的最小坐标** 排序。
+
+---
+
+## 📌 3. 中间元素的获取
+
+```cpp
+auto mid = start + object_span/2;
+```
+
+* `object_span = end - start` 表示当前范围内物体的数量。
+* 除以 2：把范围平均分成两半。
+* 例如：
+
+  * 物体下标 `[start=0, end=8)` → `object_span = 8` → `mid = 0 + 4 = 4`。
+  * 左边 `[0,4)` → 4 个物体，右边 `[4,8)` → 4 个物体。
+
+👉 由于前一步已经 **按照某个轴排序过**，所以 `mid` 的位置就是“在该轴方向上大致的中点”。这样划分后：
+
+* 左子树的物体大致在该轴的左边；
+* 右子树的物体大致在该轴的右边。
+
+---
+
+## 📌 4. 为什么这样划分有意义？
+
+* 如果不排序，直接随便分一半，可能会出现左边一个大物体覆盖整个空间，右边一堆小物体 → 导致包围盒大量重叠，效率下降。
+* 排序后，物体在最长轴方向上尽量 **均匀分布**，左右两边的包围盒也更紧凑。
+  👉 这能减少光线遍历时的包围盒重叠，从而减少不必要的递归。
+
+---
+
+✅ 总结一下：
+
+* **`comparator`**：告诉 `std::sort` 如何比较两个物体 → 按照某个轴上 AABB 的最小值排序。
+* **`mid`**：因为物体已经排序过，所以取数组的中点就是在该轴方向上的“几何中点”，自然能把空间划分成两半。
+
+---
+
+要不要我给你画一个小示例（比如 6 个物体在 X 轴上排布，排序+取 `mid` 如何把它们分成两组）？这样你会更直观地看到 BVH 的划分过程。
+
+### 问：
+我这里还是不太理解渲染时的流程，光线是在哪一阶段判断是否与包围盒相交的？
+
+### 答：
+👌 你问到的这个就是 **BVH 的运行时流程**（和构建时排序不同），我来给你梳理一遍。
+
+我们分成两个阶段理解：
+
+---
+
+## 📌 阶段 1：离线构建 BVH 树
+
+这一部分就是你之前的代码：
+
+1. 把物体按某个轴排序；
+2. 取 `mid` 划分成左右子树；
+3. 每个子树继续递归构造，直到只剩下一个或两个物体；
+4. 每个节点存储一个包围盒（`aabb`），表示“这个节点下所有物体的空间范围”。
+
+👉 最终我们得到一棵树，根节点的 `bbox` 包含整个场景，叶子节点是具体的物体。
+
+---
+
+## 📌 阶段 2：渲染时的光线遍历
+
+这时，**每一条光线发射时，都会走一遍 BVH 递归 hit 流程**。
+看你的代码里的关键函数：
+
+```cpp
+bool hit(const ray& r, interval ray_t, hit_record& rec) const override {
+    if (!bbox.hit(r, ray_t))
+        return false;   // 🚨 如果光线连当前节点的包围盒都打不中，直接返回 false
+
+    bool hit_left = left->hit(r, ray_t, rec);
+    bool hit_right = right->hit(r, interval(ray_t.min, hit_left ? rec.t : ray_t.max), rec);
+
+    return hit_left || hit_right;
+}
+```
+
+### 流程拆解：
+
+1. **光线 vs 当前节点的包围盒**
+
+   ```cpp
+   if (!bbox.hit(r, ray_t)) return false;
+   ```
+
+   * 如果光线没打中这个节点的包围盒 → 整个子树都不用看了，直接跳过。
+   * 这就是 BVH 加速的关键：跳过大量不可能命中的物体。
+
+2. **递归进入左右子树**
+
+   ```cpp
+   bool hit_left = left->hit(r, ray_t, rec);
+   bool hit_right = right->hit(r, interval(ray_t.min, hit_left ? rec.t : ray_t.max), rec);
+   ```
+
+   * 如果命中左子树，就会更新 `rec.t`（最近的交点）。
+   * 在检查右子树时，`ray_t.max` 变成了左子树的最近交点 `rec.t`，意味着：
+
+     * 如果右子树里有更远的交点，就不再关心了，因为左子树已经挡住了光线。
+
+3. **最终返回 true/false**
+
+   * 如果左右子树都 miss → false。
+   * 如果有一边 hit → true，并且 `rec` 记录最近的交点信息。
+
+---
+
+## 📌 总结
+
+* **包围盒相交测试** 发生在 **每次递归调用节点 `hit` 时**，即在访问节点前先测试它的 `bbox`。
+* 如果光线没打中这个 `bbox`，整个子树（成百上千个物体）就直接跳过，不再计算。
+* 如果打中了，才会深入到更小的子包围盒，直到叶子节点，最后才测试具体的三角形/球体等物体。
+
+👉 **BVH 的价值就在这里：**
+
+* 假设场景有 10000 个物体：
+
+  * 没有 BVH → 每条光线都要和 10000 个物体做相交测试。
+  * 有了 BVH → 光线可能只需要和几十个 `bbox` + 物体测试，大大加速。
+
+---
+
+要不要我给你画一个 **光线遍历 BVH 的递归流程图**？（从根节点 → 测 bbox → 左右子树 → 叶子节点）这样你能直观地看到光线是怎么一步步裁剪搜索空间的。
+
+### 问：
+不不，我已经了解了这个逻辑。我刚刚研究了一下，发现我是在奇怪这里的光线调用是如何工作的，bvh继承自hittable类，同样物体也继承自hittable类，还有hittable_list也继承自hittable类，这些类中都有hit函数的重载，我是还没搞清楚这里面的运作关系，我现在大概了解了这其中运用了大量的运行时多态，以下是核心代码以及相关我的理解注释，请你帮我看看有没有问题
+
+### 答：
+你总结得已经很到位了 👍，确实核心就是 **运行时多态 + BVH 替换 world**。我帮你逐点梳理一下，看哪些地方可以更精准：
+
+---
+
+### 1. `hittable` 的角色
+
+* `hittable` 是一个抽象基类，里面定义了虚函数 `hit(...)` 和 `bounding_box(...)`。
+* 所有物体（`sphere`、`octahedron`）、容器（`hittable_list`）、加速结构（`bvh_node`）都继承自 `hittable`。
+* **多态意义**：渲染器只关心 "这是一个 hittable"，不用关心它具体是球体、列表还是 BVH 节点，调用 `hit(...)` 时会动态分派到正确的实现。
+
+---
+
+### 2. `ray_color` 的调用链
+
+你在注释里写的逻辑基本正确，我稍微精炼一下调用路径：
+
+1. **顶层调用**
+
+   ```cpp
+   if (world.hit(r, interval(0.001, infinity), rec)) { ... }
+   ```
+
+   * 这里的 `world` 最终是一个 `bvh_node`（因为最后你 `world = hittable_list(make_shared<bvh_node>(world));`）。
+   * 所以实际调用的是 `bvh_node::hit(...)`。
+
+2. **BVH 节点 hit**
+
+   * 检查光线是否打到当前节点的 `bbox`。
+   * 如果命中，递归调用 `left->hit(...)` 和 `right->hit(...)`。
+   * `left` 和 `right` 可能是另一个 `bvh_node`，也可能是最终的 `sphere` 或 `octahedron`。
+
+3. **物体 hit**
+
+   * 如果走到叶子节点（具体几何体），就进入具体物体的 `hit` 计算：解方程，算交点、法线等。
+   * 命中后，更新 `hit_record`，用于后续材质计算。
+
+4. **材质 scatter**
+
+   * 命中后由材质的 `scatter` 决定如何生成新的反射 / 折射光线。
+   * `ray_color` 递归继续追踪。
+
+---
+
+### 3. 你的注释中几个关键点的修正
+
+* ✅ **正确**
+
+  > “BVH 在该项目的代码逻辑中核心作用是在这里，简化了光线与物体的相交测试”
+  > 没错，构建好 BVH 后，`world.hit()` 就变成了 BVH 的递归查找，而不是 `hittable_list` 的 O(N) 线性遍历。
+
+* ⚠️ **小调整**
+
+  > “先进入 hittable\_list 的 hit 函数，在 hittable\_list 的 hit 函数中递归进入 BVH 节点的 hit 函数”
+  > 这里不完全对：
+
+  * **构建 BVH 前**：`world` 是 `hittable_list`，`hit` 会 O(N) 遍历所有物体。
+  * **构建 BVH 后**：你写的 `world = hittable_list(make_shared<bvh_node>(world));` 实际上是把整个 `world` 包进一个 `hittable_list`，里面只有一个元素：`bvh_node`。
+    所以顶层 `world.hit()` 先进入 `hittable_list::hit()`，它会调用唯一元素 `bvh_node::hit()`，然后才进入 BVH 的递归。
+
+  👉 换句话说：最终还是通过 **BVH** 管理的，不会再直接进入 `sphere` 或 `octahedron`，而是先经过 BVH 的层级裁剪。
+
+* ✅ **正确**
+
+  > “最终像素颜色是所有光线路径贡献的积分”
+  > 是的，递归 `ray_color` 就在做蒙特卡洛积分。
+
+---
+
+### 4. 关键思想总结
+
+* `hittable` 作为接口类，保证了“统一调用方式”。
+* `hittable_list` 和 `bvh_node` 都是 **组合** 关系（包含多个 hittable），但 `hit` 的实现策略不同：
+
+  * `hittable_list`：遍历全部对象 → O(N)
+  * `bvh_node`：递归裁剪 + 遍历少量对象 → O(logN)
+* 在渲染时，`ray_color` 不需要知道场景是由什么组成的，它只管调用 `world.hit()`，多态帮你把请求派发到正确的逻辑里。
+
+---
+
+所以你的理解整体正确，只是关于 “hittable\_list 和 BVH 调用顺序” 那里稍微有点混淆：
+
+* 在构建 BVH 之后，顶层 `world` 其实还是个 `hittable_list`，但它里面只剩一个 `bvh_node`。
+* 所以运行时调用关系是：
+  `ray_color → hittable_list::hit → bvh_node::hit → [递归到物体]`。
+
+---
+
+要不要我给你画一个 **类图 + 调用链流程图**（UML 风格）？这样你能清晰看到 `hittable`、`hittable_list`、`bvh_node`、`sphere` 之间的继承和调用关系。
+
+### 问：
+我还有一点小小的问题，例如以下是派生自hittable的sphere类，这里的构造函数中即声明了该物体的最小包围盒，但是编译器是怎么知道在BVH树中遍历到叶子节点时会进入调用具体物体的例如sphere的hit函数呢？
+
+### 答：
+啊，这个问题问得非常好 🎯 —— 你其实已经踩到 C++ **运行时多态 (runtime polymorphism)** 的核心点了：
+
+> **“编译器是怎么知道 BVH 树遍历到叶子时，要调用具体物体 (比如 `sphere`) 的 `hit` 函数？”**
+
+答案就是：**编译器并不知道，它是运行时由虚函数机制（vtable）决定的**。
+我帮你完整拆开：
+
+---
+
+### 1. 基类的虚函数定义
+
+在 `hittable` 中，`hit` 被声明为 **虚函数**：
+
+```cpp
+class hittable {
+  public:
+    virtual bool hit(const ray& r, interval ray_t, hit_record& rec) const = 0;
+    virtual aabb bounding_box() const = 0;
+};
+```
+
+* `virtual` → 告诉编译器，这个函数需要支持动态分派。
+* `= 0` → 纯虚函数，`hittable` 变成抽象基类，不能直接实例化。
+
+这样，每个派生类（`sphere`、`bvh_node`、`hittable_list`）都必须实现自己的 `hit`。
+
+---
+
+### 2. vtable（虚函数表）
+
+当你写：
+
+```cpp
+sphere s(point3(0,0,0), 1.0, some_material);
+shared_ptr<hittable> obj = make_shared<sphere>(s);
+```
+
+编译器在幕后会为 `sphere` 类生成一个 **虚函数表 (vtable)**，表里存放着指针，指向 `sphere::hit` 和 `sphere::bounding_box` 等函数的具体实现。
+
+`obj` 作为 `shared_ptr<hittable>`，虽然它的静态类型是 `hittable`，但它里面记录了一个指向 `sphere` 对象的指针，并且持有“这个对象的 vtable 地址”。
+
+所以当你写：
+
+```cpp
+obj->hit(r, t, rec);
+```
+
+编译器会在运行时：
+
+1. 从对象里找到它的 vtable 指针；
+2. 在 vtable 里找到对应的 `hit` 实现；
+3. 跳转到 `sphere::hit` 去执行。
+
+这就是 **多态的动态绑定**。
+
+---
+
+### 3. 回到 BVH 的上下文
+
+在 BVH 里：
+
+```cpp
+bool hit(const ray& r, interval ray_t, hit_record& rec) const override {
+    if (!bbox.hit(r, ray_t))
+        return false;
+
+    bool hit_left = left->hit(r, ray_t, rec);
+    bool hit_right = right->hit(r, interval(ray_t.min, hit_left ? rec.t : ray_t.max), rec);
+
+    return hit_left || hit_right;
+}
+```
+
+* `left` 和 `right` 都是 `shared_ptr<hittable>`。
+* 如果它们指向的是 `sphere`，那么 `left->hit(...)` 就会通过 vtable 跳到 `sphere::hit`。
+* 如果它们指向的是另一个 `bvh_node`，那么就会进入 `bvh_node::hit`，继续递归。
+
+**BVH 根本不需要知道“叶子节点是球还是八面体”**，它只知道“我手里拿的是一个 `hittable`，它有 `hit` 方法”。
+
+---
+
+### 4. 总结一下
+
+* **编译期**：编译器只知道调用的是 `hittable::hit`，因为静态类型是 `hittable`。
+* **运行期**：通过 vtable，程序才知道具体的对象是 `sphere`，于是调用 `sphere::hit`。
+
+👉 所以答案就是：
+**进入 `sphere::hit` 完全依赖于 C++ 的运行时多态机制，而不是编译器“提前知道”**。
+
+---
+
+要不要我帮你写一个最小化 demo（几十行 C++），只用一个基类 `Shape` 和一个派生类 `Circle`，演示 **vtable 动态分派**，这样你就能单独测试“为什么 BVH 能自动跳到 `sphere::hit`”？

@@ -1,6 +1,7 @@
 #ifndef HITTABLE_LIST_H
 #define HITTABLE_LIST_H
 
+#include "aabb.h"
 #include "hittable.h"
 
 #include <memory>
@@ -20,6 +21,9 @@ class hittable_list : public hittable {
 
     void add(shared_ptr<hittable> object) {
         objects.push_back(object);
+        bbox = aabb(bbox, object->bounding_box());// 更新包围盒
+        // object是基类指针，实际指向派生类对象
+        // 典型的运行时多态，调用时自动推断object类型，从而在虚函数表中查找相应的实现，从而调用具体的函数
     }
 
     // 重写父类的hit函数
@@ -31,7 +35,7 @@ class hittable_list : public hittable {
 
         // 遍历所有物体，检查光线是否与之相交
         for (const auto& object : objects) {
-            if (object->hit(r, interval(ray_t.min, closest_so_far), temp_rec)) {
+            if (object->hit(r, interval(ray_t.min, closest_so_far), temp_rec)) { // 进入具体物体的hit函数
                 // closest_so_far作为递归传入，将其传入为最远距离限制，变相比较了新物体与上一个物体的远近
                 // 如果第二个物体在 t2 处相交且 t2 < t1：才会返回 true，closest_so_far 更新为 t2
                 hit_anything = true;
@@ -42,6 +46,13 @@ class hittable_list : public hittable {
 
         return hit_anything;
     }
+
+    aabb bounding_box() const override {
+        return bbox;
+    }
+
+  private:
+    aabb bbox;  // 包围盒
 };
 
 #endif

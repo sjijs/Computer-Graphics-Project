@@ -9,11 +9,19 @@ class octahedron : public hittable {
   public:
     // 静态八面体
     octahedron(const point3& center, double size, shared_ptr<material> mat)
-      : center(center, vec3(0,0,0)), radius(size/2.0), mat(mat) {}
+      : center(center, vec3(0,0,0)), radius(size/2.0), mat(mat) {
+        auto rvec = vec3(radius, radius, radius);
+        bbox = aabb(center - rvec, center + rvec);
+      }
 
     // 运动八面体
     octahedron(const point3& center1, const point3& center2, double radius, shared_ptr<material> mat)
-      : center(center1, center2 - center1), radius(radius), mat(mat) {}
+      : center(center1, center2 - center1), radius(radius), mat(mat) {
+        auto rvec = vec3(radius, radius, radius);
+        aabb box1 = aabb(center1 - rvec, center1 + rvec);
+        aabb box2 = aabb(center2 - rvec, center2 + rvec);
+        bbox = aabb(box1, box2);
+      }
 
     bool hit(const ray& r, interval ray_t, hit_record& rec) const override {
         point3 current_center = center.at(r.time());
@@ -84,10 +92,15 @@ class octahedron : public hittable {
         return false;
     }
 
+    aabb bounding_box() const override {
+        return bbox;
+    }
+
   private:
     ray center;
     double radius;
     shared_ptr<material> mat;
+    aabb bbox;
 };
 
 #endif

@@ -58,10 +58,10 @@ class camera {
             std::cerr << "Warning: Skybox not loaded, fallback to gradient.\n";
         }
 
-                // 初始化球谐函数
+        // 初始化球谐函数
         if (use_spherical_harmonics) {
             if (!sh_lighting.loadCoefficients(sh_coeffs_filename)) {
-                std::cerr << "警告: 无法加载球谐系数，使用默认环境光" << std::endl;
+                std::cerr << "警告: 无法加载球谐系数，将使用默认天空盒贴图" << std::endl;
                 use_spherical_harmonics = false;
             } else {
                 std::cout << "已加载球谐函数环境光照" << std::endl;
@@ -253,6 +253,10 @@ class camera {
 
         // 计算光线与场景的交点
         if (world.hit(r, interval(0.001, infinity), rec)) {
+            // ***这里的传入的world列表是BVH节点化之后的，所以这里的hit函数会更高效***
+            // ***所以BVH在该项目的代码逻辑中核心作用是在这里，简化了光线与物体的相交测试***
+            // ***这里用到大量多态，先进入hittable_list的hit函数，在hittable_list的hit函数中递归进入BVH节点的hit函数，最后进入具体物体的hit函数***
+            // ray_color → hittable_list::hit → bvh_node::hit → [递归到物体]
             // 如果光线与物体相交，设置交点的法向量
             ray scattered;// 反弹光线
             color attenuation;// 反弹光线衰减系数

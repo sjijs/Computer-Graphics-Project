@@ -10,6 +10,7 @@
 #include "material.h"
 #include "sphere.h"
 #include "octahedron.h"
+#include "bvh.h"
 
 int main() {
     SphericalHarmonics sh_lighting(3);
@@ -86,6 +87,10 @@ int main() {
     auto green_material = make_shared<dielectric>(1.5);
     world.add(make_shared<octahedron>(point3(0, 0.8, -3), 1.6, green_material));
 
+    world = hittable_list(make_shared<bvh_node>(world)); // 使用BVH加速场景
+    // 将所有的物体包裹在一个BVH节点中
+    // world中的所有节点在此时已经不再是添加时的sphere或octahedron对象，而是BVH树的节点
+
     camera cam;
 
     cam.aspect_ratio = 16.0 / 9.0;
@@ -95,7 +100,7 @@ int main() {
     // 反之如果该样本数为1，渲染出来的图像会出现明显的锯齿和噪点
     cam.max_depth = 50;  // 最大反弹次数
 
-    cam.vfov     = 20;
+    cam.vfov     = 5;
     cam.lookfrom = point3(13,2,3);
     cam.lookat   = point3(0,0,0);
     cam.vup      = vec3(0,1,0);
