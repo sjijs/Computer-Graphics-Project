@@ -3,6 +3,7 @@
 
 #include "rtweekend.h"
 #include "rtw_stb_image.h"
+#include "perlin.h"
 
 class texture {
   public:
@@ -73,6 +74,21 @@ class image_texture : public texture {
 
   private:
     rtw_image image;
+};
+
+class noise_texture : public texture {
+  public:
+    noise_texture(double scale) : scale(scale) {}
+
+    color value(double u, double v, const point3& p) const override {
+        // return color(1,1,1) * 0.5 * (1.0 + noise.noise(scale * p)); // 归一化噪声值到 [0,1],由于linear_to_gamma()颜色函数仅期望正输入
+        // return color(1,1,1) * noise.turb(p, 7); // 纹理涡旋，depth越大细节越丰富
+        return color(.5, .5, .5) * (1 + std::sin(scale * p.z() + 10 * noise.turb(p, 7))); // 结合噪声和正弦函数，增加纹理细节（使用湍流调整相位）
+    }
+
+  private:
+    perlin noise;
+    double scale; // 噪声缩放因子
 };
 
 #endif
