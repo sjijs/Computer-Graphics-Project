@@ -13,7 +13,7 @@
 #include "bvh.h"
 #include "texture.h"
 
-int main() {
+void bouncing_spheres() {
     SphericalHarmonics sh_lighting(3);
     sh_lighting.generateFromEnvironmentMap("skybox.ppm");
     sh_lighting.saveCoefficients("skybox_sh.txt");
@@ -119,4 +119,71 @@ int main() {
     cam.skybox_filename = "skybox.ppm";
 
     cam.render(world);
+}
+
+void checkered_spheres() {
+    hittable_list world;
+
+    auto checker = make_shared<checker_texture>(0.32, color(.2, .3, .1), color(.9, .9, .9));
+
+    world.add(make_shared<sphere>(point3(0,-10, 0), 10, make_shared<lambertian>(checker)));
+    world.add(make_shared<sphere>(point3(0, 10, 0), 10, make_shared<lambertian>(checker)));
+
+    camera cam;
+
+    cam.aspect_ratio      = 16.0 / 9.0;
+    cam.image_width       = 400;
+    cam.samples_per_pixel = 100;
+    cam.max_depth         = 50;
+
+    cam.vfov     = 20;
+    cam.lookfrom = point3(13,2,3);
+    cam.lookat   = point3(0,0,0);
+    cam.vup      = vec3(0,1,0);
+
+    cam.defocus_angle = 0;
+
+    cam.sh_coeffs_filename = "skybox_sh.txt";
+    cam.use_spherical_harmonics = false;
+
+    // 设置天空盒文件名
+    cam.skybox_filename = "skybox.ppm";
+
+    cam.render(world);
+}
+
+void earth() {
+    auto earth_texture = make_shared<image_texture>("solar system/earth_day_8k.jpg");
+    auto earth_surface = make_shared<lambertian>(earth_texture);
+    auto globe = make_shared<sphere>(point3(0,0,0), 2, earth_surface);
+
+    camera cam;
+
+    cam.aspect_ratio      = 16.0 / 9.0;
+    cam.image_width       = 400;
+    cam.samples_per_pixel = 100;
+    cam.max_depth         = 50;
+
+    cam.vfov     = 20;
+    cam.lookfrom = point3(0,0,12);
+    cam.lookat   = point3(0,0,0);
+    cam.vup      = vec3(0,1,0);
+
+    cam.defocus_angle = 0;
+
+    cam.sh_coeffs_filename = "skybox_sh.txt";
+    cam.use_spherical_harmonics = false;
+
+    // 设置天空盒文件名
+    cam.skybox_filename = "galaxy.jpg";
+
+    cam.render(hittable_list(globe));
+}
+
+int main() {
+    switch (3) {
+        case 1: bouncing_spheres();  break;
+        case 2: checkered_spheres(); break;
+        case 3: earth();             break;
+    }
 }

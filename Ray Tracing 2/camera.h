@@ -1,12 +1,16 @@
 #ifndef CAMERA_H
 #define CAMERA_H
 
+#include "rtweekend.h"
+#include "rtw_stb_image.h"
 #include "hittable.h"
 #include "material.h"
+#include "color.h"
 #include "spherical_harmonics.h"
 #include <fstream>
 #include <string>
 #include <algorithm>
+#include <memory>
 
 class camera {
   public:
@@ -32,20 +36,19 @@ class camera {
 
     // 天空盒贴图读取（贴图式全局光照）
     bool load_skybox(const std::string& filename) {
-        std::ifstream file(filename, std::ios::binary);
-        if (!file) return false;
-
-        std::string magic;
-        file >> magic;
-        if (magic != "P6") return false;
-
-        int maxval;
-        file >> skybox_width >> skybox_height >> maxval;
-        file.ignore(1); // 跳过换行
-
-        skybox_data.resize(skybox_width * skybox_height * 3);
-        file.read(reinterpret_cast<char*>(skybox_data.data()), skybox_data.size());
-        file.close();
+        // 使用rtw_image加载天空盒，支持多种格式
+        skybox_image = std::make_unique<rtw_image>(filename.c_str());
+        
+        if (skybox_image->width() == 0 || skybox_image->height() == 0) {
+            std::cerr << "Warning: Cannot load skybox file: " << filename << std::endl;
+            skybox_image.reset();
+            return false;
+        }
+        
+        skybox_width = skybox_image->width();
+        skybox_height = skybox_image->height();
+        
+        std::cout << "Loaded skybox: " << skybox_width << "x" << skybox_height << " (" << filename << ")" << std::endl;
         return true;
     }
 
@@ -120,7 +123,7 @@ class camera {
     // --- 天空盒数据 ---
     int skybox_width = 0;
     int skybox_height = 0;
-    std::vector<unsigned char> skybox_data; // RGB 数据
+    std::unique_ptr<rtw_image> skybox_image; // 使用rtw_image加载天空盒
 
     void initialize() {
         image_height = int(image_width / aspect_ratio);
@@ -192,7 +195,7 @@ class camera {
     }
 
     color sample_skybox(vec3 direction) const {
-        if (skybox_data.empty()) {
+        if (!skybox_image || skybox_image->width() == 0 || skybox_image->height() == 0) {
             // fallback：蓝白渐变
             vec3 unit_direction = unit_vector(direction);
             auto a = 0.5*(unit_direction.y() + 1.0);
@@ -228,19 +231,13 @@ class camera {
         i = std::clamp(i, 0, skybox_width - 1);
         j = std::clamp(j, 0, skybox_height - 1);
 
-        // 计算索引并返回颜色
-        int idx = (j * skybox_width + i) * 3;
-        if (idx + 2 < static_cast<int>(skybox_data.size())) {
-            return color(
-                skybox_data[idx]   / 255.0,
-                skybox_data[idx+1] / 255.0,
-                skybox_data[idx+2] / 255.0
-            );
-        } else {
-            // 如果索引越界，返回渐变背景
-            auto a = 0.5*(y + 1.0);
-            return (1.0-a)*color(1.0, 1.0, 1.0) + a*color(0.5, 0.7, 1.0);
-        }
+        // 使用rtw_image采样像素
+        const unsigned char* pixel = skybox_image->pixel_data(i, j);
+        return color(
+            pixel[0] / 255.0,
+            pixel[1] / 255.0,
+            pixel[2] / 255.0
+        );
     }
 
     color ray_color(const ray& r, int depth, const hittable& world) const {

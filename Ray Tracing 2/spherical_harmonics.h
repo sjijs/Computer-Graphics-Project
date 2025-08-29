@@ -1,7 +1,8 @@
 #ifndef SPHERICAL_HARMONICS_H
 #define SPHERICAL_HARMONICS_H
 
-#include "vec3.h"
+#include "rtweekend.h"
+#include "rtw_stb_image.h"
 #include "color.h"
 #include <vector>
 #include <string>
@@ -10,6 +11,7 @@
 #include <iostream>
 #include <sstream>
 #include <algorithm>
+#include <memory>
 
 // 球谐函数环境光照类
 class SphericalHarmonics {
@@ -46,7 +48,7 @@ private:
     std::vector<double> sh_coefficients_b;
 
     // 环境贴图数据
-    std::vector<unsigned char> env_map_data;
+    std::unique_ptr<rtw_image> env_map_image;
     int env_map_width, env_map_height;
 
     // 球谐基函数计算
@@ -58,7 +60,7 @@ private:
     // 阶乘函数
     double factorial(int n) const;
     
-    // 从PPM文件加载环境贴图
+    // 从多种格式文件加载环境贴图（使用stb_image库）
     bool loadEnvironmentMap(const std::string& filename);
     
     // 将笛卡尔坐标转换为球面坐标
@@ -141,7 +143,7 @@ inline void SphericalHarmonics::cartesianToSpherical(const vec3& dir, double& th
 inline color SphericalHarmonics::sampleEnvironmentMap(double theta, double phi) const {
     const double PI = 3.14159265358979323846;
     
-    if (env_map_data.empty()) {
+    if (!env_map_image || env_map_image->width() == 0 || env_map_image->height() == 0) {
         return color(0.5, 0.7, 1.0);  // 默认天空色
     }
     
@@ -160,17 +162,13 @@ inline color SphericalHarmonics::sampleEnvironmentMap(double theta, double phi) 
     i = std::clamp(i, 0, env_map_width - 1);
     j = std::clamp(j, 0, env_map_height - 1);
     
-    // 采样像素
-    int idx = (j * env_map_width + i) * 3;
-    if (idx + 2 < static_cast<int>(env_map_data.size())) {
-        return color(
-            env_map_data[idx] / 255.0,
-            env_map_data[idx + 1] / 255.0,
-            env_map_data[idx + 2] / 255.0
-        );
-    }
-    
-    return color(0.5, 0.7, 1.0);
+    // 使用rtw_image采样像素
+    const unsigned char* pixel = env_map_image->pixel_data(i, j);
+    return color(
+        pixel[0] / 255.0,
+        pixel[1] / 255.0,
+        pixel[2] / 255.0
+    );
 }
 
 // 评估球谐函数
@@ -200,37 +198,22 @@ inline color SphericalHarmonics::evaluate(const vec3& direction) const {
     return color(r, g, b);
 }
 
-// 从PPM文件加载环境贴图
+// 从多种格式文件加载环境贴图（使用stb_image库）
 inline bool SphericalHarmonics::loadEnvironmentMap(const std::string& filename) {
-    std::ifstream file(filename, std::ios::binary);
-    if (!file) {
-        std::cerr << "无法打开环境贴图文件: " << filename << std::endl;
+    // 使用rtw_image加载图像，支持多种格式（JPEG, PNG, TGA, BMP, PSD, GIF, HDR, PIC等）
+    env_map_image = std::make_unique<rtw_image>(filename.c_str());
+    
+    if (env_map_image->width() == 0 || env_map_image->height() == 0) {
+        std::cerr << "无法加载环境贴图文件: " << filename << std::endl;
+        env_map_image.reset();
         return false;
     }
     
-    std::string magic;
-    file >> magic;
+    env_map_width = env_map_image->width();
+    env_map_height = env_map_image->height();
     
-    if (magic != "P6") {
-        std::cerr << "不支持的PPM格式: " << magic << std::endl;
-        return false;
-    }
+    std::cout << "加载环境贴图: " << env_map_width << "x" << env_map_height << " (" << filename << ")" << std::endl;
     
-    int maxval;
-    file >> env_map_width >> env_map_height >> maxval;
-    file.ignore(1);  // 跳过换行符
-    
-    std::cout << "加载环境贴图: " << env_map_width << "x" << env_map_height << std::endl;
-    
-    env_map_data.resize(env_map_width * env_map_height * 3);
-    file.read(reinterpret_cast<char*>(env_map_data.data()), env_map_data.size());
-    
-    if (!file) {
-        std::cerr << "读取环境贴图数据失败" << std::endl;
-        return false;
-    }
-    
-    file.close();
     return true;
 }
 
