@@ -15,6 +15,8 @@ class hit_record {
     shared_ptr<material> mat;  // 材质指针，在初始化物体时给予相对应材质属性，当 ray_color()函数获得hit_record时
                                // 它可以调用材质指针的成员函数来找出散射的光线（如果有）。
     double t;
+    double u;
+    double v;
     bool front_face;
 
     void set_face_normal(const ray& r, const vec3& outward_normal) {

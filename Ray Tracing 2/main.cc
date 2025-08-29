@@ -11,6 +11,7 @@
 #include "sphere.h"
 #include "octahedron.h"
 #include "bvh.h"
+#include "texture.h"
 
 int main() {
     SphericalHarmonics sh_lighting(3);
@@ -20,8 +21,11 @@ int main() {
     hittable_list world;
 
     // 添加地面 - 大球体作为地面
-    auto ground_material = make_shared<lambertian>(color(0.5, 0.5, 0.5));
-    world.add(make_shared<sphere>(point3(0,-1000,0), 1000, ground_material));
+    // auto ground_material = make_shared<lambertian>(color(0.5, 0.5, 0.5));
+    // world.add(make_shared<sphere>(point3(0,-1000,0), 1000, ground_material));
+    // 棋盘材质地面
+    auto checker = make_shared<checker_texture>(0.32, color(.2, .3, .1), color(.9, .9, .9));
+    world.add(make_shared<sphere>(point3(0,-1000,0), 1000, make_shared<lambertian>(checker)));
 
     // 随机生成小物体（球体和八面体混合）
     for (int a = -11; a < 11; a++) {
@@ -100,7 +104,7 @@ int main() {
     // 反之如果该样本数为1，渲染出来的图像会出现明显的锯齿和噪点
     cam.max_depth = 50;  // 最大反弹次数
 
-    cam.vfov     = 5;
+    cam.vfov     = 20;
     cam.lookfrom = point3(13,2,3);
     cam.lookat   = point3(0,0,0);
     cam.vup      = vec3(0,1,0);

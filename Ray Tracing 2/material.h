@@ -2,6 +2,7 @@
 #define MATERIAL_H
 
 #include "hittable.h"
+#include "texture.h"
 
 /*
 材质抽象类
@@ -22,7 +23,8 @@ class material {
 
 class lambertian : public material {
   public:
-    lambertian(const color& albedo) : albedo(albedo) {}  // albedo作为反射率传入，同时也为漫反射材质的颜色
+    lambertian(const color& albedo) : tex(make_shared<solid_color>(albedo)) {}  // albedo作为反射率传入，同时也为漫反射材质的颜色
+    lambertian(shared_ptr<texture> tex) : tex(tex) {}
 
     bool scatter(const ray& r_in, const hit_record& rec, color& attenuation, ray& scattered)
     const override {
@@ -33,12 +35,12 @@ class lambertian : public material {
             scatter_direction = rec.normal;
         
         scattered = ray(rec.p, scatter_direction, r_in.time());// 生成散射光线
-        attenuation = albedo;// 反射光线衰减系数
+        attenuation = tex->value(rec.u, rec.v, rec.p);// 反射光线衰减系数
         return true;
     }
 
   private:
-    color albedo;
+    shared_ptr<texture> tex;
 };
 
 class metal : public material {
