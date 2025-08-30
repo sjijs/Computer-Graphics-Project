@@ -27,7 +27,7 @@ class material {
 
 class lambertian : public material {
   public:
-    lambertian(const color& albedo) : tex(make_shared<solid_color>(albedo)) {}  // albedo作为反射率传入，同时也为漫反射材质的颜色
+    lambertian(const color& albedo) : tex(make_shared<solid_color>(albedo)) {}  // ***albedo作为反射率传入，同时也为漫反射材质最初的颜色***
     lambertian(shared_ptr<texture> tex) : tex(tex) {}
 
     bool scatter(const ray& r_in, const hit_record& rec, color& attenuation, ray& scattered)
@@ -116,10 +116,99 @@ class diffuse_light : public material {
 
     color emitted(double u, double v, const point3& p) const override {
         return tex->value(u, v, p); // 发光材质的颜色由纹理决定
+        // 发光材质返回的值即为材质本身的颜色，不同与其余材质，返回值为数值等类型，影响光线方向等
+        // 在光线追踪中，“光”就是RGB值，摄像机是按照光路可逆去追踪影响hit点的光线，最终累积这些光线的RGB值
+        // 其他材质的scatter函数返回的是一个布尔值，表示光线是否被散射，如果散射就会被ray_color函数继续追踪传递下去
+        // 同时通过内部算法修改相应的attenuation和scattered参数输出光线的衰减和散射方向
     }
 
   private:
     shared_ptr<texture> tex;
 };
+
+/**
+ * 各向同性散射材质类 - 用于体积渲染中的粒子散射
+ * 
+ * 各向同性(Isotropic)的含义：
+ * - 光线在任何方向上的散射概率都相等
+ * - 这模拟了雾、烟雾、云朵等介质中小颗粒的散射行为
+ * - 与表面材质不同，这种材质没有"表面法向量"的概念
+ */
+class isotropic : public material {
+  public:
+    /**
+     * 构造函数 - 使用单一颜色创建各向同性材质
+     * @param albedo 散射颜色，决定介质的整体颜色外观
+     * 
+     * 使用场景：
+     * - 单色雾气：isotropic(color(0.7, 0.7, 0.7))  // 灰色雾
+     * - 彩色烟雾：isotropic(color(0.2, 0.4, 0.9))  // 蓝色烟雾
+     */
+    isotropic(const color& albedo) : tex(make_shared<solid_color>(albedo)) {}
+    
+    /**
+     * 构造函数重载 - 使用纹理创建各向同性材质
+     * @param tex 纹理对象，可以是图像纹理、噪声纹理等
+     * 
+     * 使用场景：
+     * - 云朵纹理：使用Perlin噪声模拟云的密度变化
+     * - 火焰效果：使用渐变纹理模拟火焰的颜色变化
+     * - 复杂介质：使用图像纹理定义介质的空间分布
+     */
+    isotropic(shared_ptr<texture> tex) : tex(tex) {}
+
+    /**
+     * 散射函数 - 处理光线在介质中的散射行为
+     * 
+     * @param r_in 入射光线
+     * @param rec 散射点的记录信息（位置、法向量等）
+     * @param attenuation 散射后的颜色衰减系数
+     * @param scattered 散射后的新光线
+     * @return 始终返回true，表示散射总是发生
+     * 
+     * 散射过程详解：
+     * 1. 生成随机的散射方向（均匀分布在单位球面上）
+     * 2. 从散射点发出新的光线
+     * 3. 根据纹理计算散射颜色
+     */
+    bool scatter(const ray& r_in, const hit_record& rec, color& attenuation, ray& scattered)
+    const override {
+        // 步骤1：生成各向同性的随机散射方向
+        // random_unit_vector() 在单位球面上均匀采样
+        // 这确保了散射在所有方向上的概率相等
+        scattered = ray(rec.p, random_unit_vector(), r_in.time());
+        
+        // 步骤2：计算散射点的颜色
+        // 使用纹理坐标(u,v)和3D位置(p)来采样纹理
+        // 对于体积渲染，纹理坐标可能基于3D位置计算
+        attenuation = tex->value(rec.u, rec.v, rec.p); // 指向对应的材质采样函数
+        
+        // 步骤3：散射总是发生
+        // 在真实的体积渲染中，散射概率取决于介质密度
+        // 但在这个简化模型中，我们假设散射总是发生
+        return true;
+    }
+
+  private:
+    shared_ptr<texture> tex;  // 纹理对象，定义介质的颜色分布
+};
+
+/**
+ * 物理背景知识：
+ * 
+ * 1. **Mie散射 vs Rayleigh散射**：
+ *    - 当粒子尺寸接近光波长时，发生Mie散射（各向同性）
+ *    - 当粒子远小于光波长时，发生Rayleigh散射（方向相关）
+ *    - 云朵、雾气主要表现为Mie散射
+ * 
+ * 2. **相位函数**：
+ *    - 描述散射方向的概率分布
+ *    - 各向同性相位函数：P(θ) = 1/(4π)，所有方向概率相等
+ *    - 更复杂的相位函数：Henyey-Greenstein函数，可以模拟前向或后向散射偏好
+ * 
+ * 3. **体积渲染方程**：
+ *    - L(x,ω) = ∫ σₛ(x) * P(ω,ω') * L(x,ω') dω' + σₐ(x) * Lₑ(x,ω)
+ *    - 其中σₛ是散射系数，P是相位函数，σₐ是吸收系数
+ */
 
 #endif

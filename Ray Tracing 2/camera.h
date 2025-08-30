@@ -18,6 +18,8 @@ class camera {
     int    image_width  = 100;  // Rendered image width in pixel count
     int    samples_per_pixel = 10;   // Count of random samples for each pixel
     int    max_depth = 10;   // **Maximum number of ray bounces into scene**
+    color  background;   // Scene background color
+    bool enable_skybox = true; // 是否启用天空盒
 
     double vfov = 90;  // Vertical view angle (field of view)
     point3 lookfrom = point3(0,0,0);   // Point camera is looking from
@@ -257,10 +259,22 @@ class camera {
             // 如果光线与物体相交，设置交点的法向量
             ray scattered;// 反弹光线
             color attenuation;// 反弹光线衰减系数
-            if (rec.mat->scatter(r, rec, attenuation, scattered))// 如果材质有散射光线
+            /*
+            attenuation 在代码里是每次散射（bounce）带走/保留的光的分量，通常用 RGB 三通道表示。
+            把它乘到 ray_color(...) 上就是“把上一跳返回的光按照这个材质的反射/吸收特性缩放”。
+            从物理意义上讲，attenuation 更精确的叫法是“谱反射率 / albedo / reflectance”（按通道的反射率），
+            所以它既表现为材质的颜色，也就是每个波段保留多少光；在简单模型里这也就是“反射率”。
+            */
+            color color_from_emission = rec.mat->emitted(rec.u, rec.v, rec.p); // 计算自发光颜色
+
+            if (!rec.mat->scatter(r, rec, attenuation, scattered)) // 如果材质没有散射光线
+                return color_from_emission; // 直接返回自发光颜色（没有自发光颜色时则为黑色）
+            
+            // 否则，材质有散射光线
             // 这里前方点乘的attenuation为main函数中设置的材质反射率，实际也表现为材质的颜色
-                return attenuation * ray_color(scattered, depth-1, world);// 光线递归进入下一层，方向变为材质约定的方向
-            return color(0,0,0);// 如果材质没有散射光线，则返回黑色
+            color color_from_scatter = attenuation * ray_color(scattered, depth-1, world);// 光线递归进入下一层，方向变为材质约定的方向
+            // 第一层递归中attenuation表现为材质的颜色
+            return color_from_emission + color_from_scatter; // 返回自发光颜色和散射光颜色的叠加
             // depth-1 表示光线已经反弹了一次，进入下一层的递归
             // 最终像素颜色是所有光线路径贡献的积分
         }
@@ -271,14 +285,17 @@ class camera {
         // return (1.0-a)*color(1.0, 1.0, 1.0) + a*color(0.5, 0.7, 1.0);
 
         // 使用球谐函数计算环境光照
-        if (use_spherical_harmonics) {
+        if (use_spherical_harmonics && enable_skybox) {
             // 采样天空盒*球谐函数*
             vec3 unit_direction = unit_vector(r.direction());
             return sh_lighting.evaluate(unit_direction);
-        } else {
+        } else if (enable_skybox) {
             // 采样天空盒*环境光贴图*
             vec3 unit_direction = unit_vector(r.direction());
             return sample_skybox(unit_direction);
+        } else {
+            // 返回背景色
+            return background;
         }
     }
     /*

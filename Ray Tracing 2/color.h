@@ -31,7 +31,7 @@ void write_color(std::ostream& out, const color& pixel_color) {
     // 将[0,1]范围的颜色分量转换为[0,255]范围的字节值。
     // 255.999 是为了确保四舍五入到最近的整数。
     static const interval intensity(0.000, 0.999);
-    int rbyte = int(256 * intensity.clamp(r));
+    int rbyte = int(256 * intensity.clamp(r)); // clamp函数在这里确保了rbyte的值在[0,255]范围内，截断更高的光源值
     int gbyte = int(256 * intensity.clamp(g));
     int bbyte = int(256 * intensity.clamp(b));
 
