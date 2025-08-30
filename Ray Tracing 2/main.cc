@@ -3,6 +3,7 @@
 #include <fstream>
 #include <cmath>
 #include <limits>
+#include <chrono>
 
 #include "camera.h"
 #include "constant_medium.h"
@@ -451,7 +452,7 @@ void final_scene(int image_width, int samples_per_pixel, int max_depth) {
     boundary = make_shared<sphere>(point3(0,0,0), 5000, make_shared<dielectric>(1.5));
     world.add(make_shared<constant_medium>(boundary, .0001, color(1,1,1)));
 
-    auto emat = make_shared<lambertian>(make_shared<image_texture>("earthmap.jpg"));
+    auto emat = make_shared<lambertian>(make_shared<image_texture>("solar system/earth_day_8k.jpg"));
     world.add(make_shared<sphere>(point3(400,200,400), 100, emat));
     auto pertext = make_shared<noise_texture>(0.2);
     world.add(make_shared<sphere>(point3(220,280,300), 80, make_shared<lambertian>(pertext)));
@@ -485,7 +486,20 @@ void final_scene(int image_width, int samples_per_pixel, int max_depth) {
 
     cam.defocus_angle = 0;
 
+    cam.sh_coeffs_filename = "skybox_sh.txt";
+    cam.use_spherical_harmonics = false;
+    cam.enable_skybox = false; // 该场景不需要天空盒
+
+    cam.enable_multithreading = true;
+    // 设置线程数量
+    // cam.num_threads = 16;               // 手动指定线程数
+    // 或者使用默认值（自动检测CPU核心数）
+    cam.num_threads = std::thread::hardware_concurrency();
+
+    auto start = std::chrono::high_resolution_clock::now();
     cam.render(world);
+    auto multi_time = std::chrono::high_resolution_clock::now() - start; // 记录多线程渲染时间
+    std::cout << "多线程渲染时间: " << std::chrono::duration_cast<std::chrono::milliseconds>(multi_time).count() << " 毫秒" << std::endl;
 }
 
 int main() {

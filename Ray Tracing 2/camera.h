@@ -11,6 +11,11 @@
 #include <string>
 #include <algorithm>
 #include <memory>
+#include <thread>
+#include <vector>
+#include <mutex>
+#include <atomic>
+#include <iomanip>
 
 class camera {
   public:
@@ -35,6 +40,10 @@ class camera {
 
     std::string sh_coeffs_filename = "skybox_sh.txt";  // 球谐系数文件名
     bool use_spherical_harmonics = true;
+
+    // === 多线程渲染控制 ===
+    bool enable_multithreading = true;  // 是否启用多线程渲染
+    int num_threads = std::thread::hardware_concurrency();  // 线程数量，默认为CPU核心数
 
     // 天空盒贴图读取（贴图式全局光照）
     bool load_skybox(const std::string& filename) {
@@ -80,22 +89,17 @@ class camera {
             return;
         }
 
-        // 同时输出到标准输出和文件
+        // 写入PPM头部
         file << "P3\n" << image_width << ' ' << image_height << "\n255\n";
         std::cout << "P3\n" << image_width << ' ' << image_height << "\n255\n";
 
-        for (int j = 0; j < image_height; j++) {
-            std::clog << "\rScanlines remaining: " << (image_height - j) << ' ' << std::flush;
-            for (int i = 0; i < image_width; i++) {
-                color pixel_color(0,0,0);
-                for (int sample = 0; sample < samples_per_pixel; sample++) {
-                    ray r = get_ray(i, j);
-                    pixel_color += ray_color(r, max_depth, world);
-                }
-                // 同时写入文件和标准输出
-                write_color(file, pixel_samples_scale * pixel_color);
-                write_color(std::cout, pixel_samples_scale * pixel_color);
-            }
+        // 根据设置选择单线程或多线程渲染
+        if (enable_multithreading && num_threads > 1) {
+            std::clog << "启动多线程渲染模式，使用 " << num_threads << " 个线程..." << std::endl;
+            render_multithreaded(world, file);
+        } else {
+            std::clog << "使用单线程渲染模式..." << std::endl;
+            render_singlethreaded(world, file);
         }
 
         file.close();
@@ -126,6 +130,118 @@ class camera {
     int skybox_width = 0;
     int skybox_height = 0;
     std::unique_ptr<rtw_image> skybox_image; // 使用rtw_image加载天空盒
+
+    // === 多线程渲染实现函数 ===
+    
+    /**
+     * 多线程渲染实现
+     * 策略：将图像按行分配给不同线程，避免复杂的同步问题
+     */
+    void render_multithreaded(const hittable& world, std::ofstream& outfile) {
+        // 创建颜色缓冲区存储所有像素
+        std::vector<std::vector<color>> image_buffer(image_height, 
+                                                    std::vector<color>(image_width));
+        
+        // 进度跟踪
+        std::atomic<int> completed_rows(0);
+        std::mutex progress_mutex;
+        
+        // 线程池
+        std::vector<std::thread> threads;
+        
+        // 计算每个线程处理的行数
+        int rows_per_thread = image_height / num_threads;
+        int remaining_rows = image_height % num_threads;
+        
+        // 创建工作线程
+        for (int thread_id = 0; thread_id < num_threads; ++thread_id) {
+            int start_row = thread_id * rows_per_thread;
+            int end_row = start_row + rows_per_thread;
+            
+            // 最后一个线程处理剩余行
+            if (thread_id == num_threads - 1) {
+                end_row += remaining_rows;
+            }
+            
+            threads.emplace_back([=, &world, &image_buffer, &completed_rows, &progress_mutex]() {
+                render_row_range(world, image_buffer, start_row, end_row, 
+                               completed_rows, progress_mutex, thread_id);
+            });
+        }
+        
+        // 等待所有线程完成
+        for (auto& thread : threads) {
+            thread.join();
+        }
+        
+        // 将缓冲区写入文件（单线程顺序写入确保正确性）
+        std::clog << "\n写入图像文件..." << std::endl;
+        for (int j = 0; j < image_height; j++) {
+            for (int i = 0; i < image_width; i++) {
+                write_color(outfile, image_buffer[j][i]);
+                write_color(std::cout, image_buffer[j][i]);  // 保持原有的同时输出功能
+            }
+        }
+    }
+    
+    /**
+     * 单个线程处理指定行范围
+     * 每个线程独立处理自己的行，避免数据竞争
+     */
+    void render_row_range(const hittable& world, 
+                         std::vector<std::vector<color>>& image_buffer,
+                         int start_row, int end_row,
+                         std::atomic<int>& completed_rows,
+                         std::mutex& progress_mutex,
+                         int thread_id) {
+        
+        for (int j = start_row; j < end_row; j++) {
+            // 每个线程独立处理自己的行
+            for (int i = 0; i < image_width; i++) {
+                color pixel_color(0, 0, 0);
+                
+                // 多重采样抗锯齿
+                for (int sample = 0; sample < samples_per_pixel; sample++) {
+                    ray r = get_ray(i, j);
+                    pixel_color += ray_color(r, max_depth, world);
+                }
+                
+                // 存储到缓冲区（线程安全，每个线程写入不同的行）
+                image_buffer[j][i] = pixel_samples_scale * pixel_color;
+            }
+            
+            // 线程安全的进度更新
+            int current_completed = ++completed_rows;
+            
+            // 减少锁竞争：定期更新进度显示
+            if (current_completed % 5 == 0) {
+                std::lock_guard<std::mutex> lock(progress_mutex);
+                std::clog << "\rProgress: " << current_completed << "/" << image_height 
+                         << " rows (" << std::fixed << std::setprecision(1)
+                         << (100.0 * current_completed / image_height) 
+                         << "%) " << std::flush;
+            }
+        }
+    }
+    
+    /**
+     * 单线程渲染（保持原有逻辑和注释）
+     */
+    void render_singlethreaded(const hittable& world, std::ofstream& outfile) {
+        for (int j = 0; j < image_height; j++) {
+            std::clog << "\rScanlines remaining: " << (image_height - j) << ' ' << std::flush;
+            for (int i = 0; i < image_width; i++) {
+                color pixel_color(0,0,0);
+                for (int sample = 0; sample < samples_per_pixel; sample++) {
+                    ray r = get_ray(i, j);
+                    pixel_color += ray_color(r, max_depth, world);
+                }
+                // 同时写入文件和标准输出
+                write_color(outfile, pixel_samples_scale * pixel_color);
+                write_color(std::cout, pixel_samples_scale * pixel_color);
+            }
+        }
+    }
 
     void initialize() {
         image_height = int(image_width / aspect_ratio);
