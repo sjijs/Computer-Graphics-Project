@@ -4,6 +4,8 @@
 #include "hittable.h"
 #include "material.h"
 #include "texture.h"
+#include <vector>
+#include <algorithm>
 
 /**
  * 恒定密度介质类 - 用于渲染雾、烟雾、云朵等体积效果
@@ -37,6 +39,24 @@ class constant_medium : public hittable {
       : boundary(boundary), 
         neg_inv_density(-1/density),
         phase_function(make_shared<isotropic>(albedo))
+    {}
+
+    /**
+     * 构造函数重载 - 球形非均匀密度介质
+     * @param boundary 介质边界（应该是球体）
+     * @param max_density 球心的最大密度值
+     * @param albedo 介质的反射颜色
+     * @param sphere_radius 球体半径
+     * @param sphere_center 球心位置
+     */
+    constant_medium(shared_ptr<hittable> boundary, double max_density, const color& albedo, 
+                   double sphere_radius, point3 sphere_center)
+      : boundary(boundary),
+        max_density(max_density),
+        phase_function(make_shared<isotropic>(albedo)),
+        sphere_radius(sphere_radius),
+        sphere_center(sphere_center),
+        use_variable_density(true)
     {}
 
     /**
@@ -75,10 +95,17 @@ class constant_medium : public hittable {
         auto ray_length = r.direction().length();  // 光线方向的长度
         auto distance_inside_boundary = (rec2.t - rec1.t) * ray_length;  // 实际物理距离
 
-        // 步骤7：使用指数分布随机采样散射距离
-        // 基于Beer-Lambert定律：I = I₀ * e^(-σt)
-        // 其中σ是散射系数，t是距离
-        auto hit_distance = neg_inv_density * std::log(random_double());
+        // 步骤7：根据密度类型采样散射距离
+        auto hit_distance = 0.0;
+        
+        if (use_variable_density) {
+            // 对于球形非均匀密度：使用数值积分方法
+            hit_distance = sample_variable_density_distance(r, rec1.t, distance_inside_boundary, ray_length);
+        } else {
+            // 对于恒定密度：使用指数分布随机采样
+            // 基于Beer-Lambert定律：I = I₀ * e^(-σt)
+            hit_distance = neg_inv_density * std::log(random_double());
+        }
 
         // 步骤8：检查散射是否发生在介质内部
         if (hit_distance > distance_inside_boundary)
@@ -109,6 +136,71 @@ class constant_medium : public hittable {
     shared_ptr<hittable> boundary;      // 介质的边界几何体
     double neg_inv_density;             // 负逆密度 (-1/density)，用于指数分布采样
     shared_ptr<material> phase_function; // 相位函数材质（各向同性散射）
+    
+    // 球形非均匀密度参数
+    double max_density = 0;             // 球心的最大密度
+    double sphere_radius = 0;           // 球体半径
+    point3 sphere_center;               // 球心位置
+    bool use_variable_density = false;  // 是否使用变密度
+
+    /**
+     * 球形非均匀密度的散射距离采样
+     * 使用逆变换采样法处理线性密度变化
+     */
+    double sample_variable_density_distance(const ray& r, double t_start, 
+                                           double max_distance, double ray_length) const {
+        // 使用分段线性近似和逆变换采样
+        const int num_samples = 100;
+        double step_size = max_distance / num_samples;
+        
+        // 计算累积密度积分（光学深度）
+        std::vector<double> optical_depth(num_samples + 1, 0.0);
+        
+        for (int i = 1; i <= num_samples; ++i) {
+            double current_distance = i * step_size;
+            double current_t = t_start + current_distance / ray_length;
+            point3 current_point = r.at(current_t);
+            
+            // 计算当前点的密度
+            double distance_to_center = (current_point - sphere_center).length();
+            double normalized_distance = std::min(distance_to_center / sphere_radius, 1.0);
+            double local_density = max_density * (1.0 - normalized_distance);
+            
+            // 累积光学深度（梯形积分）
+            if (i == 1) {
+                optical_depth[i] = local_density * step_size;
+            } else {
+                double prev_distance = (i - 1) * step_size;
+                double prev_t = t_start + prev_distance / ray_length;
+                point3 prev_point = r.at(prev_t);
+                double prev_dist_to_center = (prev_point - sphere_center).length();
+                double prev_normalized = std::min(prev_dist_to_center / sphere_radius, 1.0);
+                double prev_density = max_density * (1.0 - prev_normalized);
+                
+                optical_depth[i] = optical_depth[i-1] + 0.5 * (prev_density + local_density) * step_size;
+            }
+        }
+        
+        // 随机选择一个光学深度值
+        double total_optical_depth = optical_depth[num_samples];
+        if (total_optical_depth <= 0) {
+            return max_distance + 1.0; // 无散射
+        }
+        
+        double target_optical_depth = -std::log(random_double()) * total_optical_depth / total_optical_depth;
+        
+        // 二分查找对应的物理距离
+        for (int i = 1; i <= num_samples; ++i) {
+            if (optical_depth[i] >= target_optical_depth) {
+                // 线性插值
+                double fraction = (target_optical_depth - optical_depth[i-1]) / 
+                                (optical_depth[i] - optical_depth[i-1]);
+                return ((i - 1) + fraction) * step_size;
+            }
+        }
+        
+        return max_distance + 1.0; // 无散射
+    }
 };
 
 /*

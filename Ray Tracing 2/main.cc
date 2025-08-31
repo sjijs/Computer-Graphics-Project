@@ -1,3 +1,23 @@
+/**
+ * 光线追踪示例场景集合
+ * 
+ * 场景列表：
+ * 1. bouncing_spheres() - 运动模糊球体和八面体混合场景
+ * 2. checkered_spheres() - 棋盘纹理球体场景
+ * 3. earth() - 地球纹理展示
+ * 4. perlin_spheres() - Perlin噪声纹理球体
+ * 5. quads() - 四边形几何体展示
+ * 6. simple_light() - 基础光源场景
+ * 7. cornell_box() - 经典康奈尔盒子
+ * 8. cornell_smoke() - 康奈尔盒子 + 体积渲染
+ * 9. final_scene() - 复杂综合场景
+ * 10. solar_system() - 太阳系场景（新）
+ *     - 包含太阳（发光体）+ 日冕效果（体积介质）
+ *     - 8大行星 + 月球 + 土星环 + 小行星带
+ *     - 银河系环境光贴图 + 球谐函数环境光
+ *     - 多线程渲染优化
+ */
+
 #include "rtweekend.h"
 
 #include <fstream>
@@ -15,6 +35,7 @@
 #include "cycle.h"
 #include "sphere.h"
 #include "octahedron.h"
+#include "annulus.h"
 #include "bvh.h"
 #include "texture.h"
 
@@ -410,6 +431,161 @@ void cornell_smoke() {
     cam.render(world);
 }
 
+/**
+ * 太阳系场景函数 - 重新设计构图版本
+ * 特点：
+ * - 太阳在右侧，巨大且只露出一部分
+ * - 8大行星依次排列在图像中
+ * - 使用新的annulus类显示土星环
+ * - 银河系背景环境光
+ */
+void solar_system() {
+    // === 首先生成银河系贴图的球谐系数 ===
+    std::clog << "正在生成银河系环境光球谐系数..." << std::endl;
+    SphericalHarmonics sh_lighting(3);
+    sh_lighting.generateFromEnvironmentMap("solar system/sky_8k.jpg");
+    sh_lighting.saveCoefficients("galaxy_sh.txt");
+    std::clog << "银河系球谐系数生成完成！" << std::endl;
+
+    hittable_list world;
+
+    // === 太阳：巨大且位于右侧，只露出一小部分 ===
+    // 太阳作为强发光体，位置调整到右侧画面外
+    auto sun_material = make_shared<diffuse_light>(color(6.0, 4.5, 2.0));  // 更强的发光
+    auto sun = make_shared<sphere>(point3(25, 0, 0), 12.0, sun_material);  // 巨大的太阳
+    world.add(sun);
+
+    // === 太阳日冕层：更大的体积介质效果 ===
+    auto corona_boundary = make_shared<sphere>(point3(25, 0, 0), 16.0, make_shared<dielectric>(1.0));
+    world.add(corona_boundary);
+    // 日冕介质：橙黄色，低密度
+    world.add(make_shared<constant_medium>(corona_boundary, 0.02, color(1.0, 0.7, 0.3), 16.0, point3(25, 0, 0)));
+
+    // === 行星依次排列（从左到右，距离适中便于观察） ===
+    
+    // 海王星 - 最左侧，最远的行星
+    auto neptune_texture = make_shared<image_texture>("solar system/neptune_2k.jpg");
+    auto neptune_material = make_shared<lambertian>(neptune_texture);
+    world.add(make_shared<sphere>(point3(-15, 0, 2), 1.2, neptune_material));
+
+    // 天王星 - 倾斜的冰巨星
+    auto uranus_texture = make_shared<image_texture>("solar system/uranus_2k.jpg");
+    auto uranus_material = make_shared<lambertian>(uranus_texture);
+    world.add(make_shared<sphere>(point3(-12, 0, -1), 1.4, uranus_material));
+
+    // 土星 - 带美丽光环的气态巨星
+    auto saturn_texture = make_shared<image_texture>("solar system/saturn_8k.jpg");
+    auto saturn_material = make_shared<lambertian>(saturn_texture);
+    auto saturn_center = point3(-8, 0, 3);
+    world.add(make_shared<sphere>(saturn_center, 2.8, saturn_material));
+    
+    // 土星环 - 使用新的annulus类
+    auto ring_texture = make_shared<image_texture>("solar system/saturn_ring_8k.png");
+    auto ring_material = make_shared<lambertian>(ring_texture);
+    // 创建水平环状结构，内径3.5，外径6.0
+    world.add(make_shared<annulus>(
+        saturn_center, 
+        vec3(6.0, 0, 0),     // u方向向量
+        vec3(0, 0, 6.0),     // v方向向量
+        3.5,                 // 内半径
+        6.0,                 // 外半径
+        ring_material
+    ));
+
+    // 木星 - 气态巨行星
+    auto jupiter_texture = make_shared<image_texture>("solar system/jupiter_8k.jpg");
+    auto jupiter_material = make_shared<lambertian>(jupiter_texture);
+    world.add(make_shared<sphere>(point3(-4, 0, -2), 3.2, jupiter_material));
+
+    // 火星 - 红色行星
+    auto mars_texture = make_shared<image_texture>("solar system/mars_8k.jpg");
+    auto mars_material = make_shared<lambertian>(mars_texture);
+    world.add(make_shared<sphere>(point3(0, 0, 1), 0.6, mars_material));
+
+    // 地球 - 蓝色家园
+    auto earth_texture = make_shared<image_texture>("solar system/earth_day_8k.jpg");
+    auto earth_material = make_shared<lambertian>(earth_texture);
+    world.add(make_shared<sphere>(point3(3, 0, -1), 1.0, earth_material));
+
+    // 月球 - 地球的卫星
+    auto moon_texture = make_shared<image_texture>("solar system/moon_8k.jpg");
+    auto moon_material = make_shared<lambertian>(moon_texture);
+    world.add(make_shared<sphere>(point3(4.5, 0, -0.5), 0.27, moon_material));
+
+    // 金星 - 有厚大气层效果
+    auto venus_surface_texture = make_shared<image_texture>("solar system/venus_surface_8k.jpg");
+    // 金星表面
+    auto venus_surface = make_shared<sphere>(point3(6, 0, 2), 0.9, make_shared<lambertian>(venus_surface_texture));
+    world.add(venus_surface);
+    // 金星大气层（体积介质）
+    auto venus_atmosphere = make_shared<sphere>(point3(6, 0, 2), 1.1, make_shared<dielectric>(1.0));
+    world.add(venus_atmosphere);
+    world.add(make_shared<constant_medium>(venus_atmosphere, 0.15, color(0.9, 0.8, 0.4), 1.1, point3(6, 0, 2)));
+
+    // 水星 - 距离太阳最近，小而暗
+    auto mercury_texture = make_shared<image_texture>("solar system/mercury_8k.jpg");
+    auto mercury_material = make_shared<lambertian>(mercury_texture);
+    world.add(make_shared<sphere>(point3(9, 0, -1), 0.4, mercury_material));
+
+    // === 小行星带装饰（在火星和木星之间） ===
+    auto asteroid_material = make_shared<lambertian>(color(0.4, 0.4, 0.4));
+    for (int i = 0; i < 15; i++) {
+        double angle = 2 * pi * i / 15.0;
+        double radius = 2.0 + random_double(-0.8, 0.8);
+        double x = -2 + radius * cos(angle) * 0.5;  // 椭圆分布
+        double z = radius * sin(angle);
+        double y = random_double(-1, 1);
+        double size = random_double(0.03, 0.1);
+        world.add(make_shared<sphere>(point3(x, y, z), size, asteroid_material));
+    }
+
+    // === 使用BVH优化场景 ===
+    world = hittable_list(make_shared<bvh_node>(world));
+
+    // === 相机设置：从侧面观察整个太阳系排列 ===
+    camera cam;
+
+    cam.aspect_ratio      = 16.0 / 9.0;
+    cam.image_width       = 600;  // 更高分辨率展现细节
+    cam.samples_per_pixel = 1000;   // 充足采样确保质量
+    cam.max_depth         = 50;
+    cam.background        = color(0, 0, 0);  // 太空黑暗背景
+
+    // 相机位置：从侧上方观察整个行星排列，太阳在右侧
+    cam.vfov     = 45;  // 适中视角，能看到完整行星序列
+    cam.lookfrom = point3(-5, 8, -12);  // 从左前上方观察
+    cam.lookat   = point3(0, 0, 0);     // 看向行星序列中心
+    cam.vup      = vec3(0, 1, 0);
+
+    cam.defocus_angle = 0;  // 清晰对焦
+
+    // === 银河系环境光设置 ===
+    cam.skybox_filename = "solar system/sky_8k.jpg";  // 银河系背景
+    cam.sh_coeffs_filename = "galaxy_sh.txt";         // 球谐系数文件
+    cam.use_spherical_harmonics = false;              // 暂时关闭，使用天空盒
+    cam.enable_skybox = true;                          // 启用天空盒
+
+    // === 多线程渲染优化 ===
+    cam.enable_multithreading = true;
+    cam.num_threads = 32;
+
+    // === 渲染并计时 ===
+    std::clog << "=== 开始渲染重新设计的太阳系场景 ===" << std::endl;
+    std::clog << "构图特点：" << std::endl;
+    std::clog << "- 巨大太阳位于右侧（只露出一部分）" << std::endl;
+    std::clog << "- 8大行星从左到右依次排列" << std::endl;
+    std::clog << "- 土星环使用新的annulus类渲染" << std::endl;
+    std::clog << "- 银河系背景 + 日冕体积效果" << std::endl;
+    
+    auto start = std::chrono::high_resolution_clock::now();
+    cam.render(world, "solar_system_redesigned.ppm");
+    auto render_time = std::chrono::high_resolution_clock::now() - start;
+    
+    std::clog << "=== 太阳系重新设计版本渲染完成 ===" << std::endl;
+    std::clog << "渲染时间: " << std::chrono::duration_cast<std::chrono::seconds>(render_time).count() 
+              << " 秒" << std::endl;
+}
+
 void final_scene(int image_width, int samples_per_pixel, int max_depth) {
     hittable_list boxes1;
     auto ground = make_shared<lambertian>(color(0.48, 0.83, 0.53));
@@ -492,7 +668,7 @@ void final_scene(int image_width, int samples_per_pixel, int max_depth) {
 
     cam.enable_multithreading = true;
     // 设置线程数量
-    // cam.num_threads = 16;               // 手动指定线程数
+    // cam.num_threads = 32;               // 手动指定线程数
     // 或者使用默认值（自动检测CPU核心数）
     cam.num_threads = std::thread::hardware_concurrency();
 
@@ -503,7 +679,7 @@ void final_scene(int image_width, int samples_per_pixel, int max_depth) {
 }
 
 int main() {
-    switch (8) {
+    switch (10) {
         case 1: bouncing_spheres();  break;
         case 2: checkered_spheres(); break;
         case 3: earth();             break;
@@ -512,7 +688,8 @@ int main() {
         case 6: simple_light();      break;
         case 7: cornell_box();       break;
         case 8: cornell_smoke();     break;
-        case 9:  final_scene(800, 10000, 40); break;
+        case 9: final_scene(800, 5000, 40); break;
+        case 10: solar_system();     break;  // 新设计的太阳系场景
         default: final_scene(400,   250,  4); break;
     }
 }
