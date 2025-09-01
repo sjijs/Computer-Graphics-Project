@@ -568,20 +568,11 @@ void solar_system() {
     // === 多线程渲染优化 ===
     cam.enable_multithreading = true;
     cam.num_threads = 32;
-
-    // === 渲染并计时 ===
-    std::clog << "=== 开始渲染重新设计的太阳系场景 ===" << std::endl;
-    std::clog << "构图特点：" << std::endl;
-    std::clog << "- 巨大太阳位于右侧（只露出一部分）" << std::endl;
-    std::clog << "- 8大行星从左到右依次排列" << std::endl;
-    std::clog << "- 土星环使用新的annulus类渲染" << std::endl;
-    std::clog << "- 银河系背景 + 日冕体积效果" << std::endl;
     
     auto start = std::chrono::high_resolution_clock::now();
     cam.render(world, "solar_system_redesigned.ppm");
     auto render_time = std::chrono::high_resolution_clock::now() - start;
     
-    std::clog << "=== 太阳系重新设计版本渲染完成 ===" << std::endl;
     std::clog << "渲染时间: " << std::chrono::duration_cast<std::chrono::seconds>(render_time).count() 
               << " 秒" << std::endl;
 }
@@ -678,8 +669,101 @@ void final_scene(int image_width, int samples_per_pixel, int max_depth) {
     std::cout << "多线程渲染时间: " << std::chrono::duration_cast<std::chrono::milliseconds>(multi_time).count() << " 毫秒" << std::endl;
 }
 
+void test_annulus() {
+    hittable_list world;
+
+    // === 创建简单的环形测试场景 ===
+    
+    // 背景：简单的渐变天空
+    
+    // 测试环形1：水平放置的大环形（类似土星环）
+    auto ring_texture = make_shared<image_texture>("solar system/saturn_ring_8k.png");
+    auto ring_material1 = make_shared<lambertian>(ring_texture); // 金黄色
+    world.add(make_shared<annulus>(
+        point3(0, 0, 0),        // 中心位置
+        vec3(4.0, 0, 0),        // u方向向量（X轴方向）
+        vec3(0, 0, 4.0),        // v方向向量（Z轴方向）
+        1.5,                    // 内半径
+        3.0,                    // 外半径
+        ring_material1
+    ));
+
+    // 测试环形2：垂直放置的环形
+    auto ring_material2 = make_shared<metal>(color(0.7, 0.3, 0.9), 0.1); // 紫色金属
+    world.add(make_shared<annulus>(
+        point3(6, 0, 0),        // 中心位置（右侧）
+        vec3(0, 3.0, 0),        // u方向向量（Y轴方向）
+        vec3(0, 0, 3.0),        // v方向向量（Z轴方向）
+        0.8,                    // 内半径
+        2.0,                    // 外半径
+        ring_material2
+    ));
+
+    // 测试环形3：倾斜的环形
+    auto ring_material3 = make_shared<dielectric>(1.5); // 玻璃材质
+    world.add(make_shared<annulus>(
+        point3(-4, 1, 2),       // 中心位置（左侧稍高）
+        vec3(2.5, 1.0, 0),      // u方向向量（倾斜）
+        vec3(0, 1.0, 2.5),      // v方向向量（倾斜）
+        0.5,                    // 内半径
+        1.8,                    // 外半径
+        ring_material3
+    ));
+
+    // 添加一些参考球体来对比环形效果
+    auto sphere_material = make_shared<lambertian>(color(0.4, 0.7, 0.4));
+    world.add(make_shared<sphere>(point3(0, 0, 0), 0.8, sphere_material)); // 中心球体
+    world.add(make_shared<sphere>(point3(6, 0, 0), 0.5, sphere_material)); // 右侧参考球
+    world.add(make_shared<sphere>(point3(-4, 1, 2), 0.3, sphere_material)); // 左侧参考球
+
+    // 添加地面
+    auto ground_material = make_shared<lambertian>(color(0.5, 0.5, 0.5));
+    world.add(make_shared<sphere>(point3(0, -1000, 0), 1000, ground_material));
+
+    // 添加光源
+    auto light_material = make_shared<diffuse_light>(color(4, 4, 4));
+    world.add(make_shared<sphere>(point3(-2, 8, -3), 1.5, light_material));
+
+    // === 相机设置 ===
+    camera cam;
+
+    cam.aspect_ratio      = 16.0 / 9.0;
+    cam.image_width       = 800;
+    cam.samples_per_pixel = 200;
+    cam.max_depth         = 50;
+    cam.background        = color(0.1, 0.1, 0.2); // 深蓝色背景
+
+    // 相机位置：从斜上方观察所有环形
+    cam.vfov     = 50;
+    cam.lookfrom = point3(2, 6, -8);  // 观察位置
+    cam.lookat   = point3(0, 0, 0);   // 看向中心
+    cam.vup      = vec3(0, 1, 0);
+
+    cam.defocus_angle = 0;
+
+    // 禁用天空盒和球谐函数
+    cam.use_spherical_harmonics = false;
+    cam.enable_skybox = false;
+
+    // 启用多线程
+    cam.enable_multithreading = true;
+    cam.num_threads = 16;
+
+    std::clog << "=== 开始渲染环形测试场景 ===" << std::endl;
+    std::clog << "场景包含：" << std::endl;
+    std::clog << "- 水平金黄色环形（模拟土星环）" << std::endl;
+    std::clog << "- 垂直紫色金属环形" << std::endl;
+    std::clog << "- 倾斜玻璃环形" << std::endl;
+    std::clog << "- 参考球体和光源" << std::endl;
+
+    cam.render(world, "annulus_test.ppm");
+    
+    std::clog << "=== 环形测试场景渲染完成 ===" << std::endl;
+    std::clog << "输出文件：annulus_test.ppm" << std::endl;
+}
+
 int main() {
-    switch (10) {
+    switch (11) {
         case 1: bouncing_spheres();  break;
         case 2: checkered_spheres(); break;
         case 3: earth();             break;
@@ -689,7 +773,8 @@ int main() {
         case 7: cornell_box();       break;
         case 8: cornell_smoke();     break;
         case 9: final_scene(800, 5000, 40); break;
-        case 10: solar_system();     break;  // 新设计的太阳系场景
+        case 10: solar_system();     break;
+        case 11: test_annulus();     break;
         default: final_scene(400,   250,  4); break;
     }
 }

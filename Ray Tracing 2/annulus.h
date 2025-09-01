@@ -38,13 +38,11 @@ class annulus : public quad {
             return false;
 
         // 设置纹理坐标
-        // u坐标：基于角度（0到1对应0到2π）
-        auto angle = atan2(b, a);
-        if (angle < 0) angle += 2 * pi;
-        rec.u = angle / (2 * pi);
-        
-        // v坐标：基于半径位置（0对应内半径，1对应外半径）
-        rec.v = (hit_distance - inner_radius) / (outer_radius - inner_radius);
+        // u坐标：基于距离环心的距离，内环心至外环心
+        rec.u = (hit_distance - inner_radius) / (outer_radius - inner_radius);
+
+        // v坐标：始终为1.0
+        rec.v = 1.0;
         
         return true;
     }
