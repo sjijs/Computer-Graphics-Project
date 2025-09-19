@@ -1,23 +1,3 @@
-/**
- * 光线追踪示例场景集合
- * 
- * 场景列表：
- * 1. bouncing_spheres() - 运动模糊球体和八面体混合场景
- * 2. checkered_spheres() - 棋盘纹理球体场景
- * 3. earth() - 地球纹理展示
- * 4. perlin_spheres() - Perlin噪声纹理球体
- * 5. quads() - 四边形几何体展示
- * 6. simple_light() - 基础光源场景
- * 7. cornell_box() - 经典康奈尔盒子
- * 8. cornell_smoke() - 康奈尔盒子 + 体积渲染
- * 9. final_scene() - 复杂综合场景
- * 10. solar_system() - 太阳系场景（新）
- *     - 包含太阳（发光体）+ 日冕效果（体积介质）
- *     - 8大行星 + 月球 + 土星环 + 小行星带
- *     - 银河系环境光贴图 + 球谐函数环境光
- *     - 多线程渲染优化
- */
-
 #include "rtweekend.h"
 
 #include <fstream>
@@ -38,6 +18,7 @@
 #include "annulus.h"
 #include "bvh.h"
 #include "texture.h"
+#include "model_loader.h"
 
 void bouncing_spheres() {
     SphericalHarmonics sh_lighting(3);
@@ -762,8 +743,54 @@ void test_annulus() {
     std::clog << "输出文件：annulus_test.ppm" << std::endl;
 }
 
+void test_model() {
+    hittable_list world;
+
+    // 地面
+    auto ground = make_shared<lambertian>(color(0.5, 0.5, 0.5));
+
+    // 模型材质
+    auto matte = make_shared<lambertian>(color(0.7, 0.7, 0.7));
+    ModelLoadOptions opt;
+    opt.scale = vec3(1.0, 1.0, 1.0);
+    opt.translate = vec3(0, 0, 0);
+    opt.center_model = true; // 模型居中
+    opt.flip_winding = false;
+
+    // 加载模型
+    auto model = load_model_as_hittable("models/bunny.obj", matte, opt);
+    world.add(model);
+
+    // 光源（用发光球）
+    auto light = make_shared<diffuse_light>(color(6,6,6));
+    world.add(make_shared<sphere>(point3(0, 5, 4), 1.2, light));
+
+    // 相机
+    camera cam;
+    cam.aspect_ratio      = 16.0 / 9.0;
+    cam.image_width       = 800;
+    cam.samples_per_pixel = 500;
+    cam.max_depth         = 200;
+    cam.background        = color(0.05, 0.05, 0.1);
+
+    cam.vfov     = 35;
+    cam.lookfrom = point3(1.5, 1.0, -3);
+    cam.lookat   = point3(0, 0.5, 0);
+    cam.vup      = vec3(0,1,0);
+    cam.defocus_angle = 0;
+
+    cam.skybox_filename = "skybox.ppm";
+    cam.use_spherical_harmonics = false;
+    cam.enable_skybox = true;
+
+    cam.enable_multithreading = true;
+    cam.num_threads = 28;
+
+    cam.render(world, "model_test.ppm");
+}
+
 int main() {
-    switch (11) {
+    switch (12) {
         case 1: bouncing_spheres();  break;
         case 2: checkered_spheres(); break;
         case 3: earth();             break;
@@ -775,6 +802,7 @@ int main() {
         case 9: final_scene(800, 5000, 40); break;
         case 10: solar_system();     break;
         case 11: test_annulus();     break;
+        case 12: test_model();       break;
         default: final_scene(400,   250,  4); break;
     }
 }

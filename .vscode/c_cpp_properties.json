@@ -1,20 +1,26 @@
 {
     "configurations": [
         {
-            "name": "Win32",
+            "name": "MinGW-MSYS2",
+            "compilerPath": "C:/msys64/mingw64/bin/g++.exe",
+            "intelliSenseMode": "windows-gcc-x64",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
             "includePath": [
-                "${workspaceFolder}/**"
+                "${workspaceFolder}/**",
+                "C:/msys64/mingw64/include"
             ],
+            "browse": {
+                "path": [
+                    "${workspaceFolder}",
+                    "C:/msys64/mingw64/include",
+                    "C:/msys64/mingw64/lib"
+                ],
+                "limitSymbolsToIncludedHeaders": true
+            },
             "defines": [
-                "_DEBUG",
-                "UNICODE",
-                "_UNICODE"
-            ],
-            "windowsSdkVersion": "10.0.19041.0",
-            "compilerPath": "cl.exe",
-            "cStandard": "c17",
-            "intelliSenseMode": "windows-msvc-x64",
-            "cppStandard": "c++20"
+                "_USE_MATH_DEFINES"
+            ]
         }
     ],
     "version": 4

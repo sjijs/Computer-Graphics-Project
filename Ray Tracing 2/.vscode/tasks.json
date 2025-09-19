@@ -1,0 +1,45 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build Ray Tracing 2 (MSYS2)",
+			"type": "shell",
+			"command": "C:\\msys64\\mingw64\\bin\\g++.exe",
+			"args": [
+				"-fdiagnostics-color=always",
+				"-g",
+				"-IC:\\msys64\\mingw64\\include",
+				"-LC:\\msys64\\mingw64\\lib",
+				"C:\\Users\\13007\\Desktop\\general\\github_repository\\project\\Computer-Graphics-Project\\Ray Tracing 2\\main.cc",
+				"-o",
+				"C:\\Users\\13007\\Desktop\\general\\github_repository\\project\\Computer-Graphics-Project\\Ray Tracing 2\\main.exe",
+				"-lassimp",
+				"-lz"
+			],
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Build Ray Tracing 2 (MSYS2)",
+			"type": "shell",
+			"command": "\"C:\\\\msys64\\\\mingw64\\\\bin\\\\g++.exe\"",
+			"args": [
+				"-fdiagnostics-color=always",
+				"-g",
+				"-IC:\\\\msys64\\\\mingw64\\\\include",
+				"-LC:\\\\msys64\\\\mingw64\\\\lib",
+				"C:\\\\Users\\\\13007\\\\Desktop\\\\general\\\\github_repository\\\\project\\\\Computer-Graphics-Project\\\\Ray Tracing 2\\\\main.cc",
+				"-o",
+				"C:\\\\Users\\\\13007\\\\Desktop\\\\general\\\\github_repository\\\\project\\\\Computer-Graphics-Project\\\\Ray Tracing 2\\\\main.exe",
+				"-lassimp",
+				"-lz"
+			],
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		}
+	]
+}
