@@ -13,7 +13,8 @@
                 "-o",
                 "${fileDirname}\\${fileBasenameNoExtension}.exe",
                 "-lassimp",
-                "-lz"
+                "-lz",
+                "-lgdi32"
             ],
             "options": {
                 "cwd": "${fileDirname}"

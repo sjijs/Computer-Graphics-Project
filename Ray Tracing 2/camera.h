@@ -7,6 +7,7 @@
 #include "material.h"
 #include "color.h"
 #include "spherical_harmonics.h"
+#include "render_window.h"
 #include <fstream>
 #include <string>
 #include <algorithm>
@@ -25,6 +26,7 @@ class camera {
     int    max_depth = 10;   // **Maximum number of ray bounces into scene**
     color  background;   // Scene background color
     bool enable_skybox = true; // 是否启用天空盒
+    bool enable_window_output = true; // 是否以窗口实时显示渲染
 
     double vfov = 90;  // Vertical view angle (field of view)
     point3 lookfrom = point3(0,0,0);   // Point camera is looking from
@@ -82,34 +84,50 @@ class camera {
             }
         }
 
-        // 创建输出文件流
-        std::ofstream file(output_filename);
-        if (!file.is_open()) {
-            std::cerr << "Error: Cannot create output file " << output_filename << std::endl;
-            return;
+        RenderWindow window;
+        RenderWindow* window_ptr = nullptr;
+        if (enable_window_output) {
+            if (window.create(image_width, image_height, L"Ray Tracing Renderer")) {
+                window_ptr = &window;
+            } else {
+                std::cerr << "Warning: 无法创建渲染窗口，将继续以无窗口模式渲染。" << std::endl;
+            }
         }
 
-        // 写入PPM头部
-        file << "P3\n" << image_width << ' ' << image_height << "\n255\n";
-        std::cout << "P3\n" << image_width << ' ' << image_height << "\n255\n";
+        std::vector<color> accumulation_buffer(image_width * image_height, color(0, 0, 0));
+        std::vector<uint8_t> display_buffer(static_cast<size_t>(image_width) * image_height * 4, 0);
 
-        // 根据设置选择单线程或多线程渲染
+        bool completed = false;
         if (enable_multithreading && num_threads > 1) {
             std::clog << "启动多线程渲染模式，使用 " << num_threads << " 个线程..." << std::endl;
-            render_multithreaded(world, file);
+            completed = render_multithreaded(world, window_ptr, accumulation_buffer, display_buffer);
         } else {
             std::clog << "使用单线程渲染模式..." << std::endl;
-            render_singlethreaded(world, file);
+            completed = render_singlethreaded(world, window_ptr, accumulation_buffer, display_buffer);
         }
 
-        file.close();
-        std::clog << "\rDone. Output saved to " << output_filename << "                 \n";
+        if (window_ptr) {
+            window_ptr->process_events();
+            window_ptr->present(display_buffer.data());
+        }
+
+        if (completed && save_to_file_) {
+            write_buffer_to_ppm(accumulation_buffer, output_filename);
+            std::clog << "帧已保存到 " << output_filename << std::endl;
+        }
+
+        save_to_file_ = false;
     }
 
     // 重载版本：允许指定输出文件名
     void render(const hittable& world, const std::string& filename) {
+        auto previous_filename = output_filename;
+        bool previous_save_flag = save_to_file_;
         output_filename = filename;
+        save_to_file_ = true;
         render(world);
+        save_to_file_ = previous_save_flag;
+        output_filename = previous_filename;
     }
 
   private:
@@ -131,115 +149,176 @@ class camera {
     int skybox_height = 0;
     std::unique_ptr<rtw_image> skybox_image; // 使用rtw_image加载天空盒
 
-    // === 多线程渲染实现函数 ===
-    
-    /**
-     * 多线程渲染实现
-     * 策略：将图像按行分配给不同线程，避免复杂的同步问题
-     */
-    void render_multithreaded(const hittable& world, std::ofstream& outfile) {
-        // 创建颜色缓冲区存储所有像素
-        std::vector<std::vector<color>> image_buffer(image_height, 
-                                                    std::vector<color>(image_width));
-        
-        // 进度跟踪
-        std::atomic<int> completed_rows(0);
-        std::mutex progress_mutex;
-        
-        // 线程池
+    bool save_to_file_ = false;
+
+    // === 渲染实现（窗口输出） ===
+
+    bool render_multithreaded(const hittable& world,
+                              RenderWindow* window,
+                              std::vector<color>& accumulation_buffer,
+                              std::vector<uint8_t>& display_buffer) {
+        const int worker_count = std::max(1, std::min(num_threads, image_height));
+        std::atomic<int> completed_rows{0};
+        std::atomic<bool> cancel_render{false};
+
         std::vector<std::thread> threads;
-        
-        // 计算每个线程处理的行数
-        int rows_per_thread = image_height / num_threads;
-        int remaining_rows = image_height % num_threads;
-        
-        // 创建工作线程
-        for (int thread_id = 0; thread_id < num_threads; ++thread_id) {
-            int start_row = thread_id * rows_per_thread;
-            int end_row = start_row + rows_per_thread;
-            
-            // 最后一个线程处理剩余行
-            if (thread_id == num_threads - 1) {
-                end_row += remaining_rows;
+        threads.reserve(worker_count);
+
+        int base_rows = image_height / worker_count;
+        int extra_rows = image_height % worker_count;
+        int current_row = 0;
+
+        for (int thread_id = 0; thread_id < worker_count; ++thread_id) {
+            int row_count = base_rows + (thread_id < extra_rows ? 1 : 0);
+            if (row_count <= 0) {
+                continue;
             }
-            
-            threads.emplace_back([=, &world, &image_buffer, &completed_rows, &progress_mutex]() {
-                render_row_range(world, image_buffer, start_row, end_row, 
-                               completed_rows, progress_mutex, thread_id);
+
+            int start_row = current_row;
+            int end_row = start_row + row_count;
+            current_row = end_row;
+
+            threads.emplace_back([=, &world, &accumulation_buffer, &display_buffer, &completed_rows, &cancel_render]() {
+                for (int j = start_row; j < end_row; ++j) {
+                    if (cancel_render.load(std::memory_order_relaxed)) {
+                        break;
+                    }
+
+                    for (int i = 0; i < image_width; ++i) {
+                        if (cancel_render.load(std::memory_order_relaxed)) {
+                            break;
+                        }
+
+                        color pixel_color(0, 0, 0);
+                        for (int sample = 0; sample < samples_per_pixel; ++sample) {
+                            ray r = get_ray(i, j);
+                            pixel_color += ray_color(r, max_depth, world);
+                        }
+
+                        color scaled_color = pixel_samples_scale * pixel_color;
+                        store_pixel(i, j, scaled_color, accumulation_buffer, display_buffer);
+                    }
+
+                    completed_rows.fetch_add(1, std::memory_order_relaxed);
+                }
             });
         }
-        
-        // 等待所有线程完成
+
+        int last_reported = -1;
+        while (!cancel_render.load(std::memory_order_relaxed)) {
+            int current_completed = completed_rows.load(std::memory_order_relaxed);
+            if (current_completed != last_reported) {
+                std::clog << "\rProgress: " << current_completed << "/" << image_height
+                          << " rows (" << std::fixed << std::setprecision(1)
+                          << (100.0 * current_completed / std::max(1, image_height))
+                          << "%) " << std::flush;
+                last_reported = current_completed;
+            }
+
+            if (current_completed >= image_height) {
+                break;
+            }
+
+            if (window) {
+                if (!window->process_events()) {
+                    cancel_render.store(true, std::memory_order_relaxed);
+                    break;
+                }
+                window->present(display_buffer.data());
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(window ? 16 : 50));
+        }
+
+        if (cancel_render.load(std::memory_order_relaxed)) {
+            std::clog << "\n检测到窗口关闭，中止渲染。" << std::endl;
+        }
+
         for (auto& thread : threads) {
-            thread.join();
-        }
-        
-        // 将缓冲区写入文件（单线程顺序写入确保正确性）
-        std::clog << "\n写入图像文件..." << std::endl;
-        for (int j = 0; j < image_height; j++) {
-            for (int i = 0; i < image_width; i++) {
-                write_color(outfile, image_buffer[j][i]);
-                write_color(std::cout, image_buffer[j][i]);  // 保持原有的同时输出功能
+            if (thread.joinable()) {
+                thread.join();
             }
         }
+
+        if (window && !cancel_render.load(std::memory_order_relaxed)) {
+            window->process_events();
+            window->present(display_buffer.data());
+        }
+
+        std::clog << std::endl;
+        return !cancel_render.load(std::memory_order_relaxed);
     }
-    
-    /**
-     * 单个线程处理指定行范围
-     * 每个线程独立处理自己的行，避免数据竞争
-     */
-    void render_row_range(const hittable& world, 
-                         std::vector<std::vector<color>>& image_buffer,
-                         int start_row, int end_row,
-                         std::atomic<int>& completed_rows,
-                         std::mutex& progress_mutex,
-                         int thread_id) {
-        
-        for (int j = start_row; j < end_row; j++) {
-            // 每个线程独立处理自己的行
-            for (int i = 0; i < image_width; i++) {
-                color pixel_color(0, 0, 0);
-                
-                // 多重采样抗锯齿
-                for (int sample = 0; sample < samples_per_pixel; sample++) {
-                    ray r = get_ray(i, j);
-                    pixel_color += ray_color(r, max_depth, world);
-                }
-                
-                // 存储到缓冲区（线程安全，每个线程写入不同的行）
-                image_buffer[j][i] = pixel_samples_scale * pixel_color;
-            }
-            
-            // 线程安全的进度更新
-            int current_completed = ++completed_rows;
-            
-            // 减少锁竞争：定期更新进度显示
-            if (current_completed % 5 == 0) {
-                std::lock_guard<std::mutex> lock(progress_mutex);
-                std::clog << "\rProgress: " << current_completed << "/" << image_height 
-                         << " rows (" << std::fixed << std::setprecision(1)
-                         << (100.0 * current_completed / image_height) 
-                         << "%) " << std::flush;
-            }
-        }
-    }
-    
-    /**
-     * 单线程渲染（保持原有逻辑和注释）
-     */
-    void render_singlethreaded(const hittable& world, std::ofstream& outfile) {
-        for (int j = 0; j < image_height; j++) {
+
+    bool render_singlethreaded(const hittable& world,
+                               RenderWindow* window,
+                               std::vector<color>& accumulation_buffer,
+                               std::vector<uint8_t>& display_buffer) {
+        for (int j = 0; j < image_height; ++j) {
             std::clog << "\rScanlines remaining: " << (image_height - j) << ' ' << std::flush;
-            for (int i = 0; i < image_width; i++) {
-                color pixel_color(0,0,0);
-                for (int sample = 0; sample < samples_per_pixel; sample++) {
+
+            if (window && !window->process_events()) {
+                std::clog << "\n窗口关闭，中止渲染。" << std::endl;
+                return false;
+            }
+
+            for (int i = 0; i < image_width; ++i) {
+                color pixel_color(0, 0, 0);
+                for (int sample = 0; sample < samples_per_pixel; ++sample) {
                     ray r = get_ray(i, j);
                     pixel_color += ray_color(r, max_depth, world);
                 }
-                // 同时写入文件和标准输出
-                write_color(outfile, pixel_samples_scale * pixel_color);
-                write_color(std::cout, pixel_samples_scale * pixel_color);
+
+                color scaled_color = pixel_samples_scale * pixel_color;
+                store_pixel(i, j, scaled_color, accumulation_buffer, display_buffer);
             }
+
+            if (window) {
+                window->present(display_buffer.data());
+            }
+        }
+
+        std::clog << std::endl;
+        return true;
+    }
+
+    void store_pixel(int i, int j,
+                     const color& scaled_color,
+                     std::vector<color>& accumulation_buffer,
+                     std::vector<uint8_t>& display_buffer) const {
+        const int index = j * image_width + i;
+        accumulation_buffer[index] = scaled_color;
+        encode_pixel_to_bgra(scaled_color, &display_buffer[static_cast<size_t>(index) * 4]);
+    }
+
+    void encode_pixel_to_bgra(const color& linear_color, uint8_t* dest) const {
+        double r = linear_to_gamma(linear_color.x());
+        double g = linear_to_gamma(linear_color.y());
+        double b = linear_to_gamma(linear_color.z());
+
+        static const interval intensity(0.000, 0.999);
+        const auto rbyte = static_cast<uint8_t>(256 * intensity.clamp(r));
+        const auto gbyte = static_cast<uint8_t>(256 * intensity.clamp(g));
+        const auto bbyte = static_cast<uint8_t>(256 * intensity.clamp(b));
+
+        dest[0] = bbyte;
+        dest[1] = gbyte;
+        dest[2] = rbyte;
+        dest[3] = 255;
+    }
+
+    void write_buffer_to_ppm(const std::vector<color>& accumulation_buffer,
+                             const std::string& filename) const {
+        std::ofstream file(filename);
+        if (!file.is_open()) {
+            std::cerr << "Error: Cannot create output file " << filename << std::endl;
+            return;
+        }
+
+        file << "P3\n" << image_width << ' ' << image_height << "\n255\n";
+        for (const auto& pixel : accumulation_buffer) {
+            write_color(file, pixel);
         }
     }
 

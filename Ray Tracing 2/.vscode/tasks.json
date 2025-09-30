@@ -14,7 +14,8 @@
 				"-o",
 				"C:\\Users\\13007\\Desktop\\general\\github_repository\\project\\Computer-Graphics-Project\\Ray Tracing 2\\main.exe",
 				"-lassimp",
-				"-lz"
+				"-lz",
+				"-lgdi32"
 			],
 			"problemMatcher": [
 				"$gcc"
