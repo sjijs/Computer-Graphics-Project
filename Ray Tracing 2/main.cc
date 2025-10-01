@@ -32,7 +32,9 @@ void bouncing_spheres() {
     // world.add(make_shared<sphere>(point3(0,-1000,0), 1000, ground_material));
     // 棋盘材质地面
     auto checker = make_shared<checker_texture>(0.32, color(.2, .3, .1), color(.9, .9, .9));
-    world.add(make_shared<sphere>(point3(0,-1000,0), 1000, make_shared<lambertian>(checker)));
+    // 噪声材质地面
+    auto pertext = make_shared<noise_texture>(4);
+    world.add(make_shared<sphere>(point3(0,-1000,0), 1000, make_shared<lambertian>(pertext)));
 
     // 随机生成小物体（球体和八面体混合）
     for (int a = -11; a < 11; a++) {
@@ -105,11 +107,11 @@ void bouncing_spheres() {
     camera cam;
 
     cam.aspect_ratio = 16.0 / 9.0;
-    cam.image_width  = 400;
-    cam.samples_per_pixel = 100; // 每个像素的随机样本数，这里的随机采样不只可以实现抗锯齿，还可以实现漫反射材质表面的真实样子
+    cam.image_width  = 800;
+    cam.samples_per_pixel = 500; // 每个像素的随机样本数，这里的随机采样不只可以实现抗锯齿，还可以实现漫反射材质表面的真实样子
     // 如果随机样本数足够多，最终渲染出来的图像会更加平滑和真实
     // 反之如果该样本数为1，渲染出来的图像会出现明显的锯齿和噪点
-    cam.max_depth = 50;  // 最大反弹次数
+    cam.max_depth = 100;  // 最大反弹次数
 
     cam.vfov     = 20;
     cam.lookfrom = point3(13,2,3);
@@ -124,10 +126,12 @@ void bouncing_spheres() {
 
     // 设置天空盒文件名
     cam.skybox_filename = "skybox.ppm";
+    cam.enable_multithreading = true;
+    cam.num_threads = 28;
 
     cam.background = color(0.70, 0.80, 1.00);
 
-    cam.render(world);
+    cam.render(world, "examples_1.ppm");
 }
 
 void checkered_spheres() {
@@ -790,7 +794,7 @@ void test_model() {
 }
 
 int main() {
-    switch (12) {
+    switch (1) {
         case 1: bouncing_spheres();  break;
         case 2: checkered_spheres(); break;
         case 3: earth();             break;

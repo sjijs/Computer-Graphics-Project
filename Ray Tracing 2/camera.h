@@ -157,98 +157,84 @@ class camera {
                               RenderWindow* window,
                               std::vector<color>& accumulation_buffer,
                               std::vector<uint8_t>& display_buffer) {
-        const int worker_count = std::max(1, std::min(num_threads, image_height));
-        std::atomic<int> completed_rows{0};
-        std::atomic<bool> cancel_render{false};
+        const int worker_count = std::max(1, std::min(num_threads, image_height)); // 限制线程数不超过图像高度
+        std::atomic<int> next_row{0}; // 原子变量，线程安全的行索引
+        std::atomic<int> completed_rows{0}; // 已完成行数
+        std::atomic<bool> cancel_render{false}; // 渲染取消标志
 
-        std::vector<std::thread> threads;
-        threads.reserve(worker_count);
+        std::vector<std::thread> threads; // 线程池
+        threads.reserve(worker_count); // 预留线程空间
 
-        int base_rows = image_height / worker_count;
-        int extra_rows = image_height % worker_count;
-        int current_row = 0;
+        // 启动固定数量线程
+        for (int t = 0; t < worker_count; ++t) {
+            // 每个线程循环获取下一行进行渲染
+            threads.emplace_back([&, t]() {
+                while (true) {
+                    if (cancel_render.load()) break; // 检测取消标志
+                    int j = next_row.fetch_add(1); // 获取并递增行索引，相当于我原来想法的now_row++
+                    if (j >= image_height) break; // 超出范围则退出，while(true)死循环，此处为该线程循环逻辑主要出口
 
-        for (int thread_id = 0; thread_id < worker_count; ++thread_id) {
-            int row_count = base_rows + (thread_id < extra_rows ? 1 : 0);
-            if (row_count <= 0) {
-                continue;
-            }
-
-            int start_row = current_row;
-            int end_row = start_row + row_count;
-            current_row = end_row;
-
-            threads.emplace_back([=, &world, &accumulation_buffer, &display_buffer, &completed_rows, &cancel_render]() {
-                for (int j = start_row; j < end_row; ++j) {
-                    if (cancel_render.load(std::memory_order_relaxed)) {
-                        break;
-                    }
-
+                    // 渲染第j行
                     for (int i = 0; i < image_width; ++i) {
-                        if (cancel_render.load(std::memory_order_relaxed)) {
-                            break;
-                        }
-
+                        if (cancel_render.load()) break; // 再次检测取消标志
                         color pixel_color(0, 0, 0);
-                        for (int sample = 0; sample < samples_per_pixel; ++sample) {
-                            ray r = get_ray(i, j);
+                        for (int s = 0; s < samples_per_pixel; ++s) {
+                            ray r = get_ray(i, j); // 获取第i列第j行像素的光线
                             pixel_color += ray_color(r, max_depth, world);
                         }
-
                         color scaled_color = pixel_samples_scale * pixel_color;
                         store_pixel(i, j, scaled_color, accumulation_buffer, display_buffer);
                     }
-
-                    completed_rows.fetch_add(1, std::memory_order_relaxed);
+                    completed_rows.fetch_add(1);
                 }
             });
         }
 
-        int last_reported = -1;
-        while (!cancel_render.load(std::memory_order_relaxed)) {
-            int current_completed = completed_rows.load(std::memory_order_relaxed);
-            if (current_completed != last_reported) {
-                std::clog << "\rProgress: " << current_completed << "/" << image_height
+        int last_reported = -1; // 上次报告的完成行数
+        auto last_present = std::chrono::steady_clock::now(); // 上次窗口刷新的时间点
+
+        while (!cancel_render.load()) {
+            int done = completed_rows.load();
+            if (done != last_reported) {
+                std::clog << "\rProgress: " << done << "/" << image_height
                           << " rows (" << std::fixed << std::setprecision(1)
-                          << (100.0 * current_completed / std::max(1, image_height))
-                          << "%) " << std::flush;
-                last_reported = current_completed;
+                          << (100.0 * done / std::max(1, image_height)) << "%) " << std::flush;
+                last_reported = done;
             }
 
-            if (current_completed >= image_height) {
-                break;
-            }
+            if (done >= image_height) break;
 
             if (window) {
                 if (!window->process_events()) {
-                    cancel_render.store(true, std::memory_order_relaxed);
+                    cancel_render.store(true);
                     break;
                 }
-                window->present(display_buffer.data());
+                // 控制刷新频率（~60Hz）
+                // 每16毫秒刷新一次窗口,限制刷新率的作用是防止窗口刷新过于频繁，导致CPU资源浪费和性能下降
+                auto now = std::chrono::steady_clock::now();
+                if (now - last_present > std::chrono::milliseconds(16)) {
+                    window->present(display_buffer.data());
+                    last_present = now;
+                }
             } else {
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            }
-
-            std::this_thread::sleep_for(std::chrono::milliseconds(window ? 16 : 50));
-        }
-
-        if (cancel_render.load(std::memory_order_relaxed)) {
-            std::clog << "\n检测到窗口关闭，中止渲染。" << std::endl;
-        }
-
-        for (auto& thread : threads) {
-            if (thread.joinable()) {
-                thread.join();
+                std::this_thread::sleep_for(std::chrono::milliseconds(25));
             }
         }
 
-        if (window && !cancel_render.load(std::memory_order_relaxed)) {
+        // 等待线程
+        for (auto& th : threads) if (th.joinable()) th.join();
+
+        if (window && !cancel_render.load()) {
             window->process_events();
             window->present(display_buffer.data());
         }
 
         std::clog << std::endl;
-        return !cancel_render.load(std::memory_order_relaxed);
+        if (cancel_render.load()) {
+            std::clog << "检测到窗口关闭，中止渲染。" << std::endl;
+            return false;
+        }
+        return true;
     }
 
     bool render_singlethreaded(const hittable& world,
