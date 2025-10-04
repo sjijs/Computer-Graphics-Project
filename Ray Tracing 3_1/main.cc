@@ -884,13 +884,17 @@ void mix_scene() {
 
     cam.aspect_ratio = 16.0 / 9.0;
     cam.image_width  = 800;
-    cam.samples_per_pixel = 500; // 每个像素的随机样本数，这里的随机采样不只可以实现抗锯齿，还可以实现漫反射材质表面的真实样子
+    cam.samples_per_pixel = 1; // 每个像素的随机样本数，这里的随机采样不只可以实现抗锯齿，还可以实现漫反射材质表面的真实样子
     // 如果随机样本数足够多，最终渲染出来的图像会更加平滑和真实
     // 反之如果该样本数为1，渲染出来的图像会出现明显的锯齿和噪点
-    cam.max_depth = 100;  // 最大反弹次数
+    cam.max_depth = 6;  // 最大反弹次数
 
     cam.vfov     = 20;
-    cam.lookfrom = point3(13,2,3);
+    cam.enable_motion = true;
+    cam.lookfrom = point3(13, 2, 3);
+    cam.center_orbit = point3(0, 2, 0); // 相机围绕中心点旋转
+    cam.radius_orbit = 13; // 相机围绕中心点的半径
+    cam.angular_velocity = 0.1; // 相机围绕中心点的旋转速度
     cam.lookat   = point3(0,0,0);
     cam.vup      = vec3(0,1,0);
 
