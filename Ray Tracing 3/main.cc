@@ -889,6 +889,11 @@ void mix_scene() {
     // 反之如果该样本数为1，渲染出来的图像会出现明显的锯齿和噪点
     cam.max_depth = 10;  // 最大反弹次数
 
+    // Temporal降噪参数
+    cam.temporal_blend_factor = 0.95;
+    cam.temporal_accumulation_limit = 128;
+    cam.enable_temporal_denoising = false;
+
     cam.vfov     = 20;
     cam.enable_motion = false;
     cam.lookfrom = point3(13, 2, 3);
