@@ -890,16 +890,18 @@ void mix_scene() {
     cam.max_depth = 10;  // 最大反弹次数
 
     // Temporal降噪参数
-    cam.temporal_blend_factor = 0.95;
+    cam.temporal_blend_factor = 0.9;
     cam.temporal_accumulation_limit = 128;
-    cam.enable_temporal_denoising = false;
+    cam.enable_temporal_denoising = true;
+    cam.enable_spatial_denoising = true;
+    cam.enable_back_projection = true;
 
     cam.vfov     = 20;
-    cam.enable_motion = false;
+    cam.enable_motion = true;
     cam.lookfrom = point3(13, 2, 3);
     cam.center_orbit = point3(0, 2, 0); // 相机围绕中心点旋转
     cam.radius_orbit = 13; // 相机围绕中心点的半径
-    cam.angular_velocity = 0.1; // 相机围绕中心点的旋转速度
+    cam.angular_velocity = 0.01; // 相机围绕中心点的旋转速度
     cam.lookat   = point3(0,0,0);
     cam.vup      = vec3(0,1,0);
 

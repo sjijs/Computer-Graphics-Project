@@ -62,9 +62,23 @@ class camera {
     int tile_size = 32;  // 块状渲染的tile大小(16/32/64),越大越能减少原子操作开销
 
     // === Temporal降噪控制 ===
-    bool enable_temporal_denoising = true;   // 是否启用时间域降噪
-    double temporal_blend_factor = 0.92;     // 历史帧混合权重(0.9-0.95),越大越平滑但运动响应越慢
+    bool enable_temporal_denoising = false;   // 是否启用时间域降噪
+    double temporal_blend_factor = 0.9;     // 历史帧混合权重(0.9-0.95),越大越平滑但运动响应越慢
     int temporal_accumulation_limit = 64;    // 静止时最大累积帧数
+
+    // === 空间降噪控制 (Joint Bilateral Filter) ===
+    bool enable_spatial_denoising = false;   // 是否启用空间域降噪
+    int spatial_filter_radius = 2;          // 滤波半径(1=3x3, 2=5x5)
+    double spatial_sigma_color = 0.3;       // 颜色相似度阈值
+    double spatial_sigma_normal = 0.5;      // 法线相似度阈值(弧度)
+    double spatial_sigma_depth = 0.1;       // 深度相似度阈值
+
+    // === Back Projection控制 ===
+    bool enable_back_projection = false;    // 是否启用反向投影
+    double reprojection_threshold = 2.0;    // 重投影失败阈值(像素)
+
+    // === G-Buffer可视化 ===
+    int debug_gbuffer_mode = 0;  // 0=关闭, 1=深度, 2=法线, 3=世界坐标
 
     // 天空盒贴图读取(贴图式全局光照)
     bool load_skybox(const std::string& filename) {
@@ -117,6 +131,7 @@ class camera {
         std::vector<uint8_t> display_buffer(static_cast<size_t>(image_width) * image_height * 4, 0);
 
         // 初始化 Progressive 渲染状态
+        raw_accumulation.assign(image_width * image_height, color(0, 0, 0));
         accumulated_samples.assign(image_width * image_height, 0);
         total_accumulated_samples = 0;
 
@@ -125,6 +140,16 @@ class camera {
         temporal_frame_count.assign(image_width * image_height, 0);
         global_frame_count = 0;
         camera_moved_last_frame = false;
+
+        // 初始化 G-Buffer
+        current_gbuffer.assign(image_width * image_height, GBufferData());
+        previous_gbuffer.assign(image_width * image_height, GBufferData());
+        
+        // 保存初始相机状态
+        prev_camera_pos = center;
+        prev_camera_u = u;
+        prev_camera_v = v;
+        prev_camera_w = w;
 
         std::atomic<bool> cancel_render{false};
         // 持续渲染循环:仅当窗口关闭(或无窗口模式下完成一次)退出
@@ -143,6 +168,7 @@ class camera {
                 camera_moved_last_frame = true;
                 // 重置累积缓冲区,因为相机位置已改变
                 std::fill(accumulation_buffer.begin(), accumulation_buffer.end(), color(0, 0, 0));
+                std::fill(raw_accumulation.begin(), raw_accumulation.end(), color(0, 0, 0));
                 std::fill(accumulated_samples.begin(), accumulated_samples.end(), 0);
                 total_accumulated_samples = 0;
                 
@@ -157,6 +183,11 @@ class camera {
             // 确定本帧使用的采样数
             int current_spp = enable_progressive_rendering ? samples_per_frame : samples_per_pixel;
 
+            // G-Buffer Pass: 收集几何信息(用于降噪)
+            if (enable_back_projection || enable_spatial_denoising) {
+                collect_gbuffer(world);
+            }
+
             bool completed = false;
             if (enable_multithreading && num_threads > 1) {
                 completed = render_multithreaded(world, window_ptr, accumulation_buffer, display_buffer, cancel_render);
@@ -166,20 +197,56 @@ class camera {
 
             if (cancel_render.load()) break; // 渲染过程中检测到窗口关闭
 
-            // Temporal降噪: 混合当前帧和历史帧
-            if (enable_temporal_denoising && global_frame_count > 0 && !camera_moved_last_frame) {
-                apply_temporal_denoising(accumulation_buffer, display_buffer);
+            // G-Buffer调试可视化(优先级最高)
+            if (debug_gbuffer_mode > 0) {
+                visualize_gbuffer(display_buffer, debug_gbuffer_mode);
             } else {
-                // 不启用Temporal或首帧: 直接复制到显示缓冲
+                // 应用降噪管线
+                std::vector<color> denoised_buffer = accumulation_buffer;
+            
+            // 1. Temporal降噪 (带Back Projection)
+            if (enable_temporal_denoising && global_frame_count > 0 && !camera_moved_last_frame) {
+                apply_temporal_denoising(denoised_buffer, display_buffer);
+            } else {
+                // 不启用Temporal或首帧: 直接复制
                 for (int i = 0; i < image_width * image_height; ++i) {
-                    encode_pixel_to_bgra(accumulation_buffer[i], &display_buffer[i * 4]);
+                    encode_pixel_to_bgra(denoised_buffer[i], &display_buffer[i * 4]);
                 }
             }
+            
+            // 2. 空间降噪 (Joint Bilateral Filter)
+            if (enable_spatial_denoising) {
+                // 需要从display_buffer解码回color,或者在temporal之前应用
+                // 这里简化:直接对accumulation_buffer应用,然后重新encode
+                std::vector<color> spatial_filtered(image_width * image_height);
+                for (int j = 0; j < image_height; ++j) {
+                    for (int i = 0; i < image_width; ++i) {
+                        spatial_filtered[j * image_width + i] = 
+                            apply_bilateral_filter(denoised_buffer, i, j);
+                    }
+                }
+                
+                // 编码到显示缓冲
+                for (int i = 0; i < image_width * image_height; ++i) {
+                    encode_pixel_to_bgra(spatial_filtered[i], &display_buffer[i * 4]);
+                }
+            }
+            } // 结束 debug_gbuffer_mode == 0 的else分支
 
             // 保存当前帧为历史帧
             if (enable_temporal_denoising) {
                 previous_frame_buffer = accumulation_buffer;
             }
+            
+            // 保存G-Buffer和相机状态
+            if (enable_back_projection || enable_spatial_denoising) {
+                previous_gbuffer = current_gbuffer;
+                prev_camera_pos = center;
+                prev_camera_u = u;
+                prev_camera_v = v;
+                prev_camera_w = w;
+            }
+            
             global_frame_count++;
 
             if (window_ptr) {
@@ -216,8 +283,9 @@ class camera {
     std::unique_ptr<rtw_image> skybox_image; // 使用rtw_image加载天空盒
 
     // --- Progressive 渲染状态 ---
-    std::vector<int> accumulated_samples; // 每个像素的累积样本数
-    int total_accumulated_samples = 0;    // 全局累积样本计数
+    std::vector<color> raw_accumulation;   // 原始累积值(未平均)
+    std::vector<int> accumulated_samples;  // 每个像素的累积样本数
+    int total_accumulated_samples = 0;     // 全局累积样本计数
 
     // --- Temporal降噪状态 ---
     std::vector<color> previous_frame_buffer;  // 上一帧的渲染结果
@@ -225,40 +293,307 @@ class camera {
     int global_frame_count = 0;                // 全局帧计数
     bool camera_moved_last_frame = false;      // 上一帧相机是否移动
 
+    // --- G-Buffer数据 (用于降噪) ---
+    struct GBufferData {
+        float depth;           // 深度值(到相机距离)
+        vec3 world_position;   // 世界坐标
+        vec3 normal;           // 世界空间法线
+        bool valid;            // 是否有效(是否击中物体)
+        
+        GBufferData() : depth(1e10f), world_position(0,0,0), normal(0,0,0), valid(false) {}
+    };
+    
+    std::vector<GBufferData> current_gbuffer;   // 当前帧G-Buffer
+    std::vector<GBufferData> previous_gbuffer;  // 上一帧G-Buffer
+
+    // --- 相机矩阵(用于Back Projection) ---
+    point3 prev_camera_pos;       // 上一帧相机位置
+    vec3 prev_camera_u, prev_camera_v, prev_camera_w; // 上一帧相机坐标系
+
     // === 渲染实现（窗口输出） ===
 
-    // Temporal降噪: 混合当前帧和历史帧
-    void apply_temporal_denoising(const std::vector<color>& current_frame,
-                                  std::vector<uint8_t>& display_buffer) {
+    // G-Buffer Pass: 快速收集深度、法线等几何信息
+    void collect_gbuffer(const hittable& world) {
+        for (int j = 0; j < image_height; ++j) {
+            for (int i = 0; i < image_width; ++i) {
+                const int pixel_index = j * image_width + i;
+                
+                // 发射主光线(像素中心,不做抗锯齿采样)
+                auto offset = vec3(0, 0, 0); // 中心采样
+                auto pixel_sample = pixel00_loc
+                                  + (i * pixel_delta_u)
+                                  + (j * pixel_delta_v);
+                
+                auto ray_origin = center; // 不考虑散焦
+                auto ray_direction = pixel_sample - ray_origin;
+                ray r(ray_origin, ray_direction, 0.0);
+                
+                // 测试首次命中
+                hit_record rec;
+                if (world.hit(r, interval(0.001, infinity), rec)) {
+                    current_gbuffer[pixel_index].valid = true;
+                    current_gbuffer[pixel_index].depth = (rec.p - center).length();
+                    current_gbuffer[pixel_index].world_position = rec.p;
+                    current_gbuffer[pixel_index].normal = rec.normal;
+                } else {
+                    current_gbuffer[pixel_index].valid = false;
+                    current_gbuffer[pixel_index].depth = 1e10f;
+                }
+            }
+        }
+    }
+
+    // G-Buffer可视化 (调试用)
+    void visualize_gbuffer(std::vector<uint8_t>& display_buffer, int mode) {
+        double max_depth = 0.0;
+        
+        // 第一遍:找到最大深度用于归一化
+        if (mode == 1) {
+            for (int i = 0; i < image_width * image_height; ++i) {
+                if (current_gbuffer[i].valid) {
+                    max_depth = std::max(max_depth, static_cast<double>(current_gbuffer[i].depth));
+                }
+            }
+        }
+        
         for (int i = 0; i < image_width * image_height; ++i) {
-            const color& current_color = current_frame[i];
-            const color& previous_color = previous_frame_buffer[i];
+            color vis_color(0, 0, 0);
             
-            // 计算混合权重: 静止时累积更多历史帧
-            int& frame_count = temporal_frame_count[i];
-            frame_count = std::min(frame_count + 1, temporal_accumulation_limit);
-            
-            // 自适应混合: 累积的帧数越多,历史权重越大
-            double history_weight = temporal_blend_factor * std::min(1.0, frame_count / 8.0);
-            double current_weight = 1.0 - history_weight;
-            
-            // 指数移动平均 (Exponential Moving Average)
-            color blended_color = current_weight * current_color + history_weight * previous_color;
-            
-            // 可选: 颜色夹紧防止拖影 (Neighborhood Clamping)
-            // 这里简化版本,后续可以添加3x3邻域统计
-            const double clamp_factor = 1.5;
-            for (int c = 0; c < 3; ++c) {
-                double diff = std::abs(blended_color[c] - current_color[c]);
-                double max_diff = std::max(0.01, current_color[c] * clamp_factor);
-                if (diff > max_diff) {
-                    // 检测到突变(如新出现的高光),降低历史权重
-                    blended_color[c] = 0.5 * current_color[c] + 0.5 * previous_color[c];
-                    frame_count = std::max(1, frame_count / 2); // 重置累积
+            if (!current_gbuffer[i].valid) {
+                vis_color = color(0, 0, 0); // 背景黑色
+            } else {
+                switch (mode) {
+                    case 1: // 深度
+                        {
+                            double normalized_depth = current_gbuffer[i].depth / max_depth;
+                            vis_color = color(normalized_depth, normalized_depth, normalized_depth);
+                        }
+                        break;
+                    
+                    case 2: // 法线 (映射到[0,1])
+                        vis_color = (current_gbuffer[i].normal + vec3(1,1,1)) * 0.5;
+                        break;
+                    
+                    case 3: // 世界坐标 (归一化显示)
+                        {
+                            auto wp = current_gbuffer[i].world_position;
+                            vis_color = color(
+                                std::fmod(std::abs(wp.x()), 1.0),
+                                std::fmod(std::abs(wp.y()), 1.0),
+                                std::fmod(std::abs(wp.z()), 1.0)
+                            );
+                        }
+                        break;
+                    
+                    default:
+                        vis_color = color(1, 0, 1); // 错误:洋红色
+                        break;
                 }
             }
             
-            encode_pixel_to_bgra(blended_color, &display_buffer[i * 4]);
+            encode_pixel_to_bgra(vis_color, &display_buffer[i * 4]);
+        }
+    }
+
+    // 收集G-Buffer信息(修改ray_color以返回首次击中信息)
+    color ray_color_with_gbuffer(const ray& r, int depth, const hittable& world, 
+                                  GBufferData& gbuffer) const {
+        if (depth <= 0)
+            return color(0,0,0);
+
+        hit_record rec;
+
+        if (world.hit(r, interval(0.001, infinity), rec)) {
+            // 首次击中时记录G-Buffer
+            if (depth == max_depth) {
+                gbuffer.valid = true;
+                gbuffer.depth = (rec.p - center).length();
+                gbuffer.world_position = rec.p;
+                gbuffer.normal = rec.normal;
+            }
+
+            ray scattered;
+            color attenuation;
+            color color_from_emission = rec.mat->emitted(rec.u, rec.v, rec.p);
+
+            if (!rec.mat->scatter(r, rec, attenuation, scattered))
+                return color_from_emission;
+            
+            GBufferData dummy_gbuffer; // 递归时忽略G-Buffer
+            color color_from_scatter = attenuation * ray_color_with_gbuffer(scattered, depth-1, world, dummy_gbuffer);
+            return color_from_emission + color_from_scatter;
+        }
+
+        // 未击中任何物体
+        if (depth == max_depth) {
+            gbuffer.valid = false;
+        }
+
+        if (use_spherical_harmonics && enable_skybox) {
+            vec3 unit_direction = unit_vector(r.direction());
+            return sh_lighting.evaluate(unit_direction);
+        } else if (enable_skybox) {
+            vec3 unit_direction = unit_vector(r.direction());
+            return sample_skybox(unit_direction);
+        } else {
+            return background;
+        }
+    }
+
+    // Back Projection: 将当前帧世界坐标投影到上一帧屏幕空间
+    bool back_project(const vec3& world_pos, int& prev_x, int& prev_y) const {
+        // 将世界坐标转换到上一帧相机空间
+        vec3 view_pos = world_pos - prev_camera_pos;
+        
+        // 投影到上一帧视平面
+        double view_z = dot(view_pos, -prev_camera_w);
+        if (view_z <= 0) return false; // 在相机后面
+        
+        double view_x = dot(view_pos, prev_camera_u);
+        double view_y = dot(view_pos, prev_camera_v);
+        
+        // 转换到NDC坐标 [-1, 1]
+        double ndc_x = view_x / (view_z * std::tan(degrees_to_radians(vfov/2)) * aspect_ratio);
+        double ndc_y = view_y / (view_z * std::tan(degrees_to_radians(vfov/2)));
+        
+        // 转换到屏幕坐标
+        prev_x = static_cast<int>((ndc_x + 1.0) * 0.5 * image_width);
+        prev_y = static_cast<int>((1.0 - ndc_y) * 0.5 * image_height);
+        
+        // 检查是否在屏幕内
+        return (prev_x >= 0 && prev_x < image_width && 
+                prev_y >= 0 && prev_y < image_height);
+    }
+
+    // Joint Bilateral Filter: 边缘保持的空间滤波
+    color apply_bilateral_filter(const std::vector<color>& input_buffer,
+                                 int center_x, int center_y) const {
+        const int pixel_index = center_y * image_width + center_x;
+        const GBufferData& center_gb = current_gbuffer[pixel_index];
+        
+        if (!center_gb.valid) {
+            return input_buffer[pixel_index]; // 背景像素不滤波
+        }
+        
+        color sum_color(0, 0, 0);
+        double sum_weight = 0.0;
+        
+        const int radius = spatial_filter_radius;
+        
+        for (int dy = -radius; dy <= radius; ++dy) {
+            for (int dx = -radius; dx <= radius; ++dx) {
+                int nx = center_x + dx;
+                int ny = center_y + dy;
+                
+                // 边界检查
+                if (nx < 0 || nx >= image_width || ny < 0 || ny >= image_height)
+                    continue;
+                
+                const int neighbor_index = ny * image_width + nx;
+                const GBufferData& neighbor_gb = current_gbuffer[neighbor_index];
+                
+                if (!neighbor_gb.valid) continue;
+                
+                // 空间距离权重 (高斯)
+                double spatial_dist = std::sqrt(dx*dx + dy*dy);
+                double spatial_weight = std::exp(-spatial_dist * spatial_dist / (2.0 * radius * radius));
+                
+                // 深度相似度权重
+                double depth_diff = std::abs(neighbor_gb.depth - center_gb.depth) / center_gb.depth;
+                double depth_weight = std::exp(-depth_diff * depth_diff / (2.0 * spatial_sigma_depth * spatial_sigma_depth));
+                
+                // 法线相似度权重
+                double normal_sim = dot(neighbor_gb.normal, center_gb.normal);
+                normal_sim = std::max(0.0, normal_sim); // clamp to [0,1]
+                double normal_weight = std::pow(normal_sim, 1.0 / spatial_sigma_normal);
+                
+                // 颜色相似度权重(可选,防止过度平滑)
+                color color_diff = input_buffer[neighbor_index] - input_buffer[pixel_index];
+                double color_dist = color_diff.length();
+                double color_weight = std::exp(-color_dist * color_dist / (2.0 * spatial_sigma_color * spatial_sigma_color));
+                
+                // 综合权重
+                double weight = spatial_weight * depth_weight * normal_weight * color_weight;
+                
+                sum_color += weight * input_buffer[neighbor_index];
+                sum_weight += weight;
+            }
+        }
+        
+        if (sum_weight > 1e-6) {
+            return sum_color / sum_weight;
+        } else {
+            return input_buffer[pixel_index];
+        }
+    }
+
+    // Temporal降噪: 混合当前帧和历史帧 (支持Back Projection)
+    void apply_temporal_denoising(const std::vector<color>& current_frame,
+                                  std::vector<uint8_t>& display_buffer) {
+        for (int y = 0; y < image_height; ++y) {
+            for (int x = 0; x < image_width; ++x) {
+                const int i = y * image_width + x;
+                const color& current_color = current_frame[i];
+                const GBufferData& current_gb = current_gbuffer[i];
+                
+                color history_color = previous_frame_buffer[i];
+                bool reprojection_valid = true;
+                
+                // Back Projection: 尝试找到上一帧对应像素
+                if (enable_back_projection && current_gb.valid) {
+                    int prev_x, prev_y;
+                    if (back_project(current_gb.world_position, prev_x, prev_y)) {
+                        const int prev_i = prev_y * image_width + prev_x;
+                        const GBufferData& prev_gb = previous_gbuffer[prev_i];
+                        
+                        if (prev_gb.valid) {
+                            // 验证重投影质量(深度和法线一致性)
+                            double depth_diff = std::abs(current_gb.depth - prev_gb.depth) / current_gb.depth;
+                            double normal_sim = dot(current_gb.normal, prev_gb.normal);
+                            
+                            if (depth_diff < 0.1 && normal_sim > 0.95) {
+                                // 重投影成功,使用重投影位置的历史颜色
+                                history_color = previous_frame_buffer[prev_i];
+                            } else {
+                                reprojection_valid = false; // 重投影失败,降低历史权重
+                            }
+                        } else {
+                            reprojection_valid = false;
+                        }
+                    } else {
+                        reprojection_valid = false; // 投影到屏幕外
+                    }
+                }
+                
+                // 计算混合权重
+                int& frame_count = temporal_frame_count[i];
+                if (!reprojection_valid) {
+                    frame_count = 0; // 重投影失败,重置累积
+                }
+                frame_count = std::min(frame_count + 1, temporal_accumulation_limit);
+                
+                double history_weight = temporal_blend_factor * std::min(1.0, frame_count / 8.0);
+                if (!reprojection_valid) {
+                    history_weight *= 0.3; // 降低不可靠历史的权重
+                }
+                double current_weight = 1.0 - history_weight;
+                
+                // 指数移动平均
+                color blended_color = current_weight * current_color + history_weight * history_color;
+                
+                // 颜色夹紧(防止拖影)
+                const double clamp_factor = 1.5;
+                for (int c = 0; c < 3; ++c) {
+                    double diff = std::abs(blended_color[c] - current_color[c]);
+                    double max_diff = std::max(0.01, current_color[c] * clamp_factor);
+                    if (diff > max_diff) {
+                        blended_color[c] = 0.5 * current_color[c] + 0.5 * history_color[c];
+                        frame_count = std::max(1, frame_count / 2);
+                    }
+                }
+                
+                encode_pixel_to_bgra(blended_color, &display_buffer[i * 4]);
+            }
         }
     }
 
@@ -330,12 +665,13 @@ class camera {
                             // Progressive 模式:累积而非替换
                             const int pixel_index = j * image_width + i;
                             if (enable_progressive_rendering) {
-                                accumulation_buffer[pixel_index] += pixel_color;
+                                // 累积原始值(不平均)
+                                raw_accumulation[pixel_index] += pixel_color;
                                 accumulated_samples[pixel_index] += current_spp;
                                 
-                                // 计算平均颜色 (存到accumulation_buffer,后续由Temporal处理)
+                                // 计算平均颜色存到accumulation_buffer
                                 int total_samples = accumulated_samples[pixel_index];
-                                accumulation_buffer[pixel_index] = (accumulation_buffer[pixel_index] / total_samples);
+                                accumulation_buffer[pixel_index] = raw_accumulation[pixel_index] / total_samples;
                             } else {
                                 // 传统模式:直接平均本帧样本
                                 color scaled_color = pixel_color / current_spp;
@@ -442,11 +778,13 @@ class camera {
 
                 const int pixel_index = j * image_width + i;
                 if (enable_progressive_rendering) {
-                    accumulation_buffer[pixel_index] += pixel_color;
+                    // 累积原始值(不平均)
+                    raw_accumulation[pixel_index] += pixel_color;
                     accumulated_samples[pixel_index] += current_spp;
                     
+                    // 计算平均颜色
                     int total_samples = accumulated_samples[pixel_index];
-                    accumulation_buffer[pixel_index] = (accumulation_buffer[pixel_index] / total_samples);
+                    accumulation_buffer[pixel_index] = raw_accumulation[pixel_index] / total_samples;
                 } else {
                     color scaled_color = pixel_color / current_spp;
                     accumulation_buffer[pixel_index] = scaled_color;
