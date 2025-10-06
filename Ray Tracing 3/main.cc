@@ -883,27 +883,37 @@ void mix_scene() {
     camera cam;
 
     cam.aspect_ratio = 16.0 / 9.0;
-    cam.image_width  = 720;
+    cam.image_width  = 1980;
     cam.samples_per_pixel = 1; // 每个像素的随机样本数，这里的随机采样不只可以实现抗锯齿，还可以实现漫反射材质表面的真实样子
     // 如果随机样本数足够多，最终渲染出来的图像会更加平滑和真实
     // 反之如果该样本数为1，渲染出来的图像会出现明显的锯齿和噪点
     cam.max_depth = 10;  // 最大反弹次数
 
-    // Temporal降噪参数
+    // 降噪参数
+    cam.enable_stratified_sampling = false;  // 是否启用分层采样
+    cam.enable_progressive_rendering = false; // 是否启用渐进式渲染(帧间累积)
+    cam.samples_per_frame = 1; 
     cam.temporal_blend_factor = 0.9;
     cam.temporal_accumulation_limit = 128;
-    cam.enable_temporal_denoising = true;
-    cam.enable_spatial_denoising = true;
-    cam.enable_back_projection = true;
+    cam.enable_temporal_denoising = false;
+    cam.enable_spatial_denoising = false;
+    cam.enable_back_projection = false;
     cam.temporal_blend_factor = 0.85;
     cam.debug_gbuffer_mode = 0;
     cam.spatial_sigma_color = 0.5;       // 颜色相似度阈值
     cam.spatial_sigma_normal = 0.5;      // 法线相似度阈值(弧度)
     cam.spatial_sigma_depth = 0.1; 
     cam.enable_russian_roulette = true; // 启用俄罗斯轮盘赌
+    cam.enable_outlier_removal = true; // 启用异常值移除
+    cam.outlier_threshold = 0.5;
 
+    // 单帧模式
+    cam.single_frame_mode = true;
+    cam.output_filename = "single_frame_3.ppm";
+
+    // 相机参数
     cam.vfov     = 20;
-    cam.enable_motion = true;
+    cam.enable_motion = false;
     cam.lookfrom = point3(13, 2, 3);
     cam.center_orbit = point3(0, 2, 0); // 相机围绕中心点旋转
     cam.radius_orbit = 13; // 相机围绕中心点的半径
@@ -924,7 +934,7 @@ void mix_scene() {
 
     cam.background = color(0.70, 0.80, 1.00);
 
-    cam.render(world, "examples_2.ppm");
+    cam.render(world);
 }
 
 int main() {

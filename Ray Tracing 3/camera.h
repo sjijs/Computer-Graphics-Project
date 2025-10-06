@@ -47,15 +47,15 @@ class camera {
     std::string skybox_filename = "skybox.ppm";  // 天空盒贴图文件名
 
     std::string sh_coeffs_filename = "skybox_sh.txt";  // 球谐系数文件名
-    bool use_spherical_harmonics = true;
+    bool use_spherical_harmonics = false;
 
     // === 多线程渲染控制 ===
     bool enable_multithreading = true;  // 是否启用多线程渲染
     int num_threads = std::thread::hardware_concurrency();  // 线程数量，默认为CPU核心数
 
     // === 降噪优化控制 ===
-    bool enable_stratified_sampling = true;  // 是否启用分层采样
-    bool enable_progressive_rendering = true; // 是否启用渐进式渲染(帧间累积)
+    bool enable_stratified_sampling = false;  // 是否启用分层采样
+    bool enable_progressive_rendering = false; // 是否启用渐进式渲染(帧间累积)
     int samples_per_frame = 1;  // Progressive模式下每帧的采样数(建议1-4)
 
     // === 性能优化控制 ===
@@ -81,9 +81,19 @@ class camera {
     int debug_gbuffer_mode = 0;  // 0=关闭, 1=深度, 2=法线, 3=世界坐标, 4=双边滤波权重
 
     // === Russian Roulette控制 ===
-    bool enable_russian_roulette = true;   // 是否启用俄罗斯轮盘赌(避免黑点)
+    bool enable_russian_roulette = false;   // 是否启用俄罗斯轮盘赌(避免黑点)
     int rr_start_depth = 3;                // 从第几次弹射开始应用RR(建议3-5)
     double rr_survival_prob = 0.95;        // 基础存活概率(0.9-0.95)
+
+    // === Outlier Removal控制 ===
+    bool enable_outlier_removal = false;   // 是否启用异常值移除
+    double outlier_threshold = 0.5;        // 异常值阈值(相对于邻域均值,0.3-0.7)
+    int outlier_filter_radius = 1;         // 异常检测半径(1=3x3, 2=5x5)
+
+    // === 单帧渲染控制 ===
+    bool single_frame_mode = false;        // 单帧离线渲染模式
+    std::string output_filename = "output.ppm"; // 输出文件名
+    bool show_progress_window = true;      // 渲染时是否显示进度窗口
 
     // 天空盒贴图读取(贴图式全局光照)
     bool load_skybox(const std::string& filename) {
@@ -124,6 +134,12 @@ class camera {
 
         RenderWindow window;
         RenderWindow* window_ptr = nullptr;
+        
+        // 单帧模式: 总是显示窗口(除非用户明确关闭)
+        if (single_frame_mode) {
+            enable_window_output = show_progress_window;
+        }
+        
         if (enable_window_output) {
             if (window.create(image_width, image_height, L"Ray Tracing Renderer")) {
                 window_ptr = &window;
@@ -157,7 +173,24 @@ class camera {
         prev_camera_w = w;
 
         std::atomic<bool> cancel_render{false};
-        // 持续渲染循环:仅当窗口关闭(或无窗口模式下完成一次)退出
+        
+        // 单帧模式: 只渲染一次然后保存
+        if (single_frame_mode) {
+            std::clog << "\n=== 单帧离线渲染模式 ===" << std::endl;
+            std::clog << "分辨率: " << image_width << "x" << image_height << std::endl;
+            std::clog << "采样数: " << samples_per_pixel << " spp" << std::endl;
+            std::clog << "最大深度: " << max_depth << std::endl;
+            std::clog << "Russian Roulette: " << (enable_russian_roulette ? "启用" : "关闭") << std::endl;
+            if (enable_russian_roulette) {
+                std::clog << "  - 起始深度: " << rr_start_depth << std::endl;
+                std::clog << "  - 存活概率: " << rr_survival_prob << std::endl;
+            }
+            std::clog << "输出文件: " << output_filename << std::endl;
+            std::clog << "============================\n" << std::endl;
+        }
+        
+        // 持续渲染循环:仅当窗口关闭(或单帧模式完成)退出
+        bool single_frame_done = false;
         while (true) {
             // 处理窗口事件(优先判断关闭)
             if (window_ptr) {
@@ -207,6 +240,11 @@ class camera {
             } else {
                 // 应用降噪管线 (线性空间 → 线性空间 → BGRA)
                 std::vector<color> denoised_buffer = accumulation_buffer;
+            
+                // 0. Outlier Removal (异常值移除 - 最先应用)
+                if (enable_outlier_removal) {
+                    denoised_buffer = apply_outlier_removal(denoised_buffer);
+                }
             
                 // 1. Temporal降噪 (线性空间输入/输出)
                 if (enable_temporal_denoising && global_frame_count > 0) {
@@ -258,13 +296,52 @@ class camera {
                 window_ptr->present(display_buffer.data());
             }
 
-            // 持续渲染：此处可以加入 progressive 策略（增量样本）占位
+            // 单帧模式: 渲染完成后保存并退出
+            if (single_frame_mode && !single_frame_done) {
+                single_frame_done = true;
+                
+                std::clog << "\n=== 渲染完成,正在保存... ===" << std::endl;
+                
+                // 保存到文件
+                write_buffer_to_ppm(accumulation_buffer, output_filename);
+                
+                std::clog << "已保存到: " << output_filename << std::endl;
+                std::clog << "按任意键关闭窗口或直接关闭窗口退出..." << std::endl;
+                
+                // 如果有窗口,保持显示直到用户关闭
+                if (window_ptr) {
+                    while (window_ptr->process_events()) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+                    }
+                }
+                
+                break; // 退出渲染循环
+            }
+            
+            // 实时模式: 继续下一帧
+            if (!single_frame_mode) {
+                // 持续渲染
+            } else {
+                // 单帧模式已完成,退出
+                break;
+            }
         }
     }
 
-    // 重载版本：允许指定输出文件名(已废弃,仅保留窗口渲染)
+    // 重载版本：单帧离线渲染(带文件名)
+    // 注意: 该版本会强制启用single_frame_mode,如需实时模式请使用无参数版本
     void render(const hittable& world, const std::string& filename) {
-        // 忽略filename参数,直接调用窗口渲染
+        single_frame_mode = true;  // 强制单帧模式
+        output_filename = filename;
+        show_progress_window = true;
+        render(world);
+    }
+    
+    // 重载版本：单帧离线渲染(带文件名和窗口控制)
+    void render(const hittable& world, const std::string& filename, bool show_window) {
+        single_frame_mode = true;  // 强制单帧模式
+        output_filename = filename;
+        show_progress_window = show_window;
         render(world);
     }
 
@@ -640,6 +717,119 @@ class camera {
         } else {
             return input_buffer[pixel_index];
         }
+    }
+
+    // Outlier Removal: 移除异常暗点(黑点)
+    std::vector<color> apply_outlier_removal(const std::vector<color>& input_buffer) const {
+        std::vector<color> output(image_width * image_height);
+        
+        const int radius = outlier_filter_radius;
+        
+        for (int y = 0; y < image_height; ++y) {
+            for (int x = 0; x < image_width; ++x) {
+                const int pixel_index = y * image_width + x;
+                const color& center_color = input_buffer[pixel_index];
+                
+                // 收集邻域像素
+                std::vector<double> neighbor_luminance;
+                color neighbor_sum(0, 0, 0);
+                int neighbor_count = 0;
+                
+                for (int dy = -radius; dy <= radius; ++dy) {
+                    for (int dx = -radius; dx <= radius; ++dx) {
+                        if (dx == 0 && dy == 0) continue; // 跳过中心像素
+                        
+                        int nx = x + dx;
+                        int ny = y + dy;
+                        
+                        // 边界检查
+                        if (nx < 0 || nx >= image_width || ny < 0 || ny >= image_height)
+                            continue;
+                        
+                        const int neighbor_index = ny * image_width + nx;
+                        const color& neighbor_color = input_buffer[neighbor_index];
+                        
+                        // 计算亮度(相对亮度公式: 0.299R + 0.587G + 0.114B)
+                        double lum = 0.299 * neighbor_color.x() + 
+                                    0.587 * neighbor_color.y() + 
+                                    0.114 * neighbor_color.z();
+                        
+                        neighbor_luminance.push_back(lum);
+                        neighbor_sum += neighbor_color;
+                        neighbor_count++;
+                    }
+                }
+                
+                if (neighbor_count == 0) {
+                    output[pixel_index] = center_color;
+                    continue;
+                }
+                
+                // 计算中心像素亮度
+                double center_lum = 0.299 * center_color.x() + 
+                                   0.587 * center_color.y() + 
+                                   0.114 * center_color.z();
+                
+                // 计算邻域平均亮度
+                double avg_neighbor_lum = 0.0;
+                for (double lum : neighbor_luminance) {
+                    avg_neighbor_lum += lum;
+                }
+                avg_neighbor_lum /= neighbor_count;
+                
+                // 计算邻域亮度标准差
+                double variance = 0.0;
+                for (double lum : neighbor_luminance) {
+                    double diff = lum - avg_neighbor_lum;
+                    variance += diff * diff;
+                }
+                double std_dev = std::sqrt(variance / neighbor_count);
+                
+                // 检测异常值:如果中心像素比邻域平均值暗很多
+                bool is_outlier = false;
+                
+                if (avg_neighbor_lum > 1e-6) {
+                    // 相对差异检测
+                    double relative_diff = (avg_neighbor_lum - center_lum) / avg_neighbor_lum;
+                    
+                    // 如果中心像素比邻域暗超过阈值,且邻域有足够亮度
+                    if (relative_diff > outlier_threshold && avg_neighbor_lum > 0.05) {
+                        is_outlier = true;
+                    }
+                    
+                    // 额外检测:中心像素是否是明显的黑点(接近黑色但邻域不黑)
+                    if (center_lum < 0.01 && avg_neighbor_lum > 0.1) {
+                        is_outlier = true;
+                    }
+                }
+                
+                if (is_outlier) {
+                    // 用邻域中值替换(更稳定)
+                    std::sort(neighbor_luminance.begin(), neighbor_luminance.end());
+                    double median_lum = neighbor_luminance[neighbor_luminance.size() / 2];
+                    
+                    // 找到亮度最接近中值的邻域像素
+                    color replacement_color = neighbor_sum / neighbor_count; // 默认用平均值
+                    
+                    // 或者使用智能插值:保持色调,只调整亮度
+                    if (center_lum > 1e-6) {
+                        // 保持原色调,放大亮度
+                        double scale = median_lum / center_lum;
+                        scale = std::min(scale, 10.0); // 限制最大放大倍数
+                        replacement_color = center_color * scale;
+                    } else {
+                        // 完全黑色,用邻域平均色
+                        replacement_color = neighbor_sum / neighbor_count;
+                    }
+                    
+                    output[pixel_index] = replacement_color;
+                } else {
+                    output[pixel_index] = center_color;
+                }
+            }
+        }
+        
+        return output;
     }
 
     // Temporal降噪: 混合当前帧和历史帧 (支持Back Projection) - 线性空间版本
