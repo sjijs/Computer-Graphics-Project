@@ -883,7 +883,7 @@ void mix_scene() {
     camera cam;
 
     cam.aspect_ratio = 16.0 / 9.0;
-    cam.image_width  = 900;
+    cam.image_width  = 720;
     cam.samples_per_pixel = 1; // 每个像素的随机样本数，这里的随机采样不只可以实现抗锯齿，还可以实现漫反射材质表面的真实样子
     // 如果随机样本数足够多，最终渲染出来的图像会更加平滑和真实
     // 反之如果该样本数为1，渲染出来的图像会出现明显的锯齿和噪点
@@ -895,6 +895,12 @@ void mix_scene() {
     cam.enable_temporal_denoising = true;
     cam.enable_spatial_denoising = true;
     cam.enable_back_projection = true;
+    cam.temporal_blend_factor = 0.85;
+    cam.debug_gbuffer_mode = 0;
+    cam.spatial_sigma_color = 0.5;       // 颜色相似度阈值
+    cam.spatial_sigma_normal = 0.5;      // 法线相似度阈值(弧度)
+    cam.spatial_sigma_depth = 0.1; 
+    cam.enable_russian_roulette = true; // 启用俄罗斯轮盘赌
 
     cam.vfov     = 20;
     cam.enable_motion = true;
@@ -905,8 +911,8 @@ void mix_scene() {
     cam.lookat   = point3(0,0,0);
     cam.vup      = vec3(0,1,0);
 
-    cam.defocus_angle = 0.6;
-    cam.focus_dist    = 10.0;
+    cam.defocus_angle = 0; // 景深效果
+    cam.focus_dist    = 10.0; // 聚焦距离
 
     cam.sh_coeffs_filename = "skybox_sh.txt";
     cam.use_spherical_harmonics = false;
