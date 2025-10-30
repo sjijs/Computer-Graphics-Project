@@ -87,8 +87,8 @@ class camera {
 
     // === Outlier Removal控制 ===
     bool enable_outlier_removal = false;   // 是否启用异常值移除
-    double outlier_threshold = 0.5;        // 异常值阈值(相对于邻域均值,0.3-0.7)
-    int outlier_filter_radius = 1;         // 异常检测半径(1=3x3, 2=5x5)
+    double outlier_threshold = 0.3;        // 异常值阈值(相对于邻域均值,0.3-0.7)
+    int outlier_filter_radius = 3;         // 异常检测半径(1=3x3, 2=5x5)
 
     // === 单帧渲染控制 ===
     bool single_frame_mode = false;        // 单帧离线渲染模式
@@ -211,7 +211,7 @@ class camera {
                 std::fill(accumulated_samples.begin(), accumulated_samples.end(), 0);
                 total_accumulated_samples = 0;
                 
-                // Temporal降噪: **不**清除历史帧!让Back Projection处理运动
+                // Temporal降噪: 不清除历史帧，让Back Projection处理运动
                 // (如果Back Projection失败,apply_temporal_denoising会自动降低历史权重)
             } else {
                 camera_moved_last_frame = false;
@@ -392,7 +392,7 @@ class camera {
     point3 prev_camera_pos;       // 上一帧相机位置
     vec3 prev_camera_u, prev_camera_v, prev_camera_w; // 上一帧相机坐标系
 
-    // === 渲染实现（窗口输出） ===
+    // 渲染实现（窗口输出）
 
     // G-Buffer Pass: 快速收集深度、法线等几何信息
     void collect_gbuffer(const hittable& world) {
@@ -908,81 +908,6 @@ class camera {
         }
         
         return output;
-    }
-
-    // Temporal降噪: 混合当前帧和历史帧 (支持Back Projection) - 旧版本(已废弃)
-    void apply_temporal_denoising(const std::vector<color>& current_frame,
-                                  std::vector<uint8_t>& display_buffer) {
-        for (int y = 0; y < image_height; ++y) {
-            for (int x = 0; x < image_width; ++x) {
-                const int i = y * image_width + x;
-                const color& current_color = current_frame[i];
-                const GBufferData& current_gb = current_gbuffer[i];
-                
-                color history_color = previous_frame_buffer[i];
-                bool reprojection_valid = true;
-                
-                // Back Projection: 尝试找到上一帧对应像素
-                if (enable_back_projection && current_gb.valid) {
-                    int prev_x, prev_y;
-                    if (back_project(current_gb.world_position, prev_x, prev_y)) {
-                        const int prev_i = prev_y * image_width + prev_x;
-                        const GBufferData& prev_gb = previous_gbuffer[prev_i];
-                        
-                        if (prev_gb.valid) {
-                            // 验证重投影质量(深度和法线一致性)
-                            double depth_diff = std::abs(current_gb.depth - prev_gb.depth) / (current_gb.depth + 1e-6);
-                            double normal_sim = dot(current_gb.normal, prev_gb.normal);
-                            
-                            // 放宽重投影验证阈值,提高运动场景的降噪效果
-                            if (depth_diff < 0.2 && normal_sim > 0.9) {
-                                // 重投影成功,使用重投影位置的历史颜色
-                                history_color = previous_frame_buffer[prev_i];
-                            } else {
-                                reprojection_valid = false; // 重投影失败,降低历史权重
-                            }
-                        } else {
-                            reprojection_valid = false;
-                        }
-                    } else {
-                        reprojection_valid = false; // 投影到屏幕外
-                    }
-                }
-                
-                // 计算混合权重
-                int& frame_count = temporal_frame_count[i];
-                if (!reprojection_valid && camera_moved_last_frame) {
-                    // 相机移动且重投影失败: 降低历史权重但不完全清零
-                    frame_count = std::max(1, frame_count / 4); // 保留部分历史
-                } else if (!reprojection_valid) {
-                    frame_count = 0; // 静止场景下重投影失败才完全重置
-                } else {
-                    frame_count = std::min(frame_count + 1, temporal_accumulation_limit);
-                }
-                
-                double history_weight = temporal_blend_factor * std::min(1.0, frame_count / 8.0);
-                if (!reprojection_valid) {
-                    history_weight *= 0.5; // 降低不可靠历史的权重
-                }
-                double current_weight = 1.0 - history_weight;
-                
-                // 指数移动平均
-                color blended_color = current_weight * current_color + history_weight * history_color;
-                
-                // 颜色夹紧(防止拖影) - 相机移动时放宽限制
-                const double clamp_factor = camera_moved_last_frame ? 2.0 : 1.5;
-                for (int c = 0; c < 3; ++c) {
-                    double diff = std::abs(blended_color[c] - current_color[c]);
-                    double max_diff = std::max(0.01, current_color[c] * clamp_factor);
-                    if (diff > max_diff) {
-                        blended_color[c] = 0.5 * current_color[c] + 0.5 * history_color[c];
-                        frame_count = std::max(1, frame_count / 2);
-                    }
-                }
-                
-                encode_pixel_to_bgra(blended_color, &display_buffer[i * 4]);
-            }
-        }
     }
 
     bool render_multithreaded(const hittable& world,
