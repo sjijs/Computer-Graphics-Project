@@ -120,3 +120,6 @@ Ray Tracing 3/
 
 ![alt text](picture/image-1.png)
 - 联合滤波（实时化）效果（运动相机）
+
+！[alt text](picture/solar_system_redesigned.ppm)
+- 渲染场景展示：太阳系
