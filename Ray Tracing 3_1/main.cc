@@ -883,7 +883,7 @@ void mix_scene() {
     camera cam;
 
     cam.aspect_ratio = 16.0 / 9.0;
-    cam.image_width  = 1920;
+    cam.image_width  = 1200;
     cam.samples_per_pixel = 500; // 每个像素的随机样本数，这里的随机采样不只可以实现抗锯齿，还可以实现漫反射材质表面的真实样子
     // 如果随机样本数足够多，最终渲染出来的图像会更加平滑和真实
     // 反之如果该样本数为1，渲染出来的图像会出现明显的锯齿和噪点
