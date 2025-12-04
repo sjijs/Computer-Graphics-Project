@@ -4,6 +4,16 @@ In this repositories,I will implement some basic graphics project.
 
 # Ray Tracing
 
+## 渲染效果展示
+![alt text](picture/图片1.png)
+- 单张（1200*675）迭代累积10spp后效果(静止相机)
+
+![alt text](picture/motion_camera.gif)
+- 联合滤波（实时化）效果（运动相机）
+
+![alt text](picture/solar_system_redesigned.png)
+- 渲染场景展示：太阳系
+
 ##  核心功能
 
 ###  渲染管线
@@ -114,12 +124,5 @@ Ray Tracing 3/
 - [ ] 焦散与参与媒质改进
 - [ ] 多GPU分布式渲染
 
-## 渲染效果展示
-![alt text](picture/图片1.png)
-- 单张（1200*675）迭代累积10spp后效果(静止相机)
-
-![alt text](picture/motion_camera.gif)
-- 联合滤波（实时化）效果（运动相机）
-
-![alt text](picture/solar_system_redesigned.png)
-- 渲染场景展示：太阳系
+## 参考资料
+- [_Ray Tracing: The Next Week_](https://raytracing.github.io/books/RayTracingTheNextWeek.html)
