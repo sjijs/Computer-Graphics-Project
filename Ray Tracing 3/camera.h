@@ -234,6 +234,20 @@ class camera {
 
             if (cancel_render.load()) break; // 渲染过程中检测到窗口关闭
 
+            // 【优化】先用未降噪的buffer快速更新窗口，提升响应性
+            if (window_ptr && !enable_spatial_denoising && !enable_temporal_denoising) {
+                // 如果没有启用降噪，直接编码并显示
+                for (int i = 0; i < image_width * image_height; ++i) {
+                    encode_pixel_to_bgra(accumulation_buffer[i], &display_buffer[i * 4]);
+                }
+                window_ptr->present(display_buffer.data());
+            }
+
+            // === 降噪管线性能监控 ===
+            auto denoise_start = std::chrono::steady_clock::now();
+            auto step_start = denoise_start;
+            double outlier_time = 0, temporal_time = 0, spatial_time = 0, encode_time = 0;
+
             // G-Buffer调试可视化(优先级最高)
             if (debug_gbuffer_mode > 0) {
                 visualize_gbuffer(display_buffer, debug_gbuffer_mode);
@@ -243,29 +257,74 @@ class camera {
             
                 // 0. Outlier Removal (异常值移除 - 最先应用)
                 if (enable_outlier_removal) {
+                    step_start = std::chrono::steady_clock::now();
                     denoised_buffer = apply_outlier_removal(denoised_buffer);
+                    outlier_time = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - step_start).count();
                 }
             
                 // 1. Temporal降噪 (线性空间输入/输出)
                 if (enable_temporal_denoising && global_frame_count > 0) {
+                    step_start = std::chrono::steady_clock::now();
                     denoised_buffer = apply_temporal_denoising_linear(denoised_buffer);
+                    temporal_time = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - step_start).count();
                 }
                 
-                // 2. 空间降噪 (线性空间输入/输出)
+                // 2. 空间降噪 (线性空间输入/输出) - 并行化
                 if (enable_spatial_denoising) {
+                    step_start = std::chrono::steady_clock::now();
                     std::vector<color> spatial_filtered(image_width * image_height);
-                    for (int j = 0; j < image_height; ++j) {
-                        for (int i = 0; i < image_width; ++i) {
-                            spatial_filtered[j * image_width + i] = 
-                                apply_bilateral_filter(denoised_buffer, i, j);
+                    
+                    // 多线程并行滤波
+                    if (enable_multithreading && num_threads > 1) {
+                        const int worker_count = std::min(num_threads, image_height);
+                        std::vector<std::thread> threads;
+                        std::atomic<int> next_row{0};
+                        
+                        for (int t = 0; t < worker_count; ++t) {
+                            threads.emplace_back([&]() {
+                                while (true) {
+                                    int j = next_row.fetch_add(1);
+                                    if (j >= image_height) break;
+                                    
+                                    for (int i = 0; i < image_width; ++i) {
+                                        spatial_filtered[j * image_width + i] = 
+                                            apply_bilateral_filter(denoised_buffer, i, j);
+                                    }
+                                }
+                            });
+                        }
+                        
+                        for (auto& th : threads) if (th.joinable()) th.join();
+                    } else {
+                        // 单线程版本
+                        std::cout << "Spatial denoising running in single-threaded mode." << std::endl;
+                        for (int j = 0; j < image_height; ++j) {
+                            for (int i = 0; i < image_width; ++i) {
+                                spatial_filtered[j * image_width + i] = 
+                                    apply_bilateral_filter(denoised_buffer, i, j);
+                            }
                         }
                     }
+                    
                     denoised_buffer = spatial_filtered;
+                    spatial_time = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - step_start).count();
                 }
                 
                 // 3. 最终编码到显示缓冲 (线性空间 → BGRA)
+                step_start = std::chrono::steady_clock::now();
                 for (int i = 0; i < image_width * image_height; ++i) {
                     encode_pixel_to_bgra(denoised_buffer[i], &display_buffer[i * 4]);
+                }
+                encode_time = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - step_start).count();
+                
+                // 输出降噪性能统计
+                double total_denoise_time = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - denoise_start).count();
+                if (global_frame_count % 60 == 1) { // 每60帧输出一次（降低I/O开销）
+                    std::clog << "\n[Denoise Pipeline] Total: " << std::fixed << std::setprecision(1) << total_denoise_time << "ms";
+                    if (enable_outlier_removal) std::clog << " | Outlier: " << outlier_time << "ms";
+                    if (enable_temporal_denoising) std::clog << " | Temporal: " << temporal_time << "ms";
+                    if (enable_spatial_denoising) std::clog << " | Spatial: " << spatial_time << "ms"; // 空间滤波时间较长
+                    std::clog << " | Encode: " << encode_time << "ms" << std::endl;
                 }
             } // 结束 debug_gbuffer_mode == 0 的else分支
 
@@ -292,6 +351,7 @@ class camera {
             
             global_frame_count++;
 
+            // 【关键】降噪完成后立即刷新窗口
             if (window_ptr) {
                 window_ptr->present(display_buffer.data());
             }
@@ -1029,11 +1089,12 @@ class camera {
 
             if (window) {
                 if (!window->process_events()) { cancel_render.store(true); break; }
-                auto now = std::chrono::steady_clock::now();
-                if (now - last_present > std::chrono::milliseconds(16)) {
-                    window->present(display_buffer.data());
-                    last_present = now;
-                }
+                // 移除渲染期间的present调用，统一在主循环降噪后present
+                // auto now = std::chrono::steady_clock::now();
+                // if (now - last_present > std::chrono::milliseconds(16)) {
+                //     window->present(display_buffer.data());
+                //     last_present = now;
+                // }
             } else {
                 std::this_thread::sleep_for(std::chrono::milliseconds(25));
             }
@@ -1047,10 +1108,10 @@ class camera {
             total_accumulated_samples += current_spp;
         }
 
-        if (window && !cancel_render.load()) {
-            window->process_events();
-            window->present(display_buffer.data());
-        }
+        // 注意: 窗口更新已在主循环中处理，这里不再重复present
+        // if (window && !cancel_render.load()) {
+        //     window->present(display_buffer.data());
+        // }
 
         auto end_time = std::chrono::steady_clock::now();
         auto total_time = std::chrono::duration<double>(end_time - start_time).count();

@@ -904,7 +904,7 @@ void mix_scene() {
     cam.spatial_sigma_normal = 0.5;      // 法线相似度阈值(弧度)
     cam.spatial_sigma_depth = 0.1; 
     cam.enable_russian_roulette = true; // 启用俄罗斯轮盘赌
-    cam.enable_outlier_removal = true; // 启用异常值移除
+    cam.enable_outlier_removal = false; // 启用异常值移除
     cam.outlier_threshold = 0.5;
 
     // 单帧模式

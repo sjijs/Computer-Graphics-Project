@@ -118,7 +118,7 @@ Ray Tracing 3/
 ![alt text](picture/图片1.png)
 - 单张（1200*675）迭代累积10spp后效果(静止相机)
 
-![alt text](picture/image-1.png)
+![alt text](picture/motion_camera.gif)
 - 联合滤波（实时化）效果（运动相机）
 
 ![alt text](picture/solar_system_redesigned.png)
