@@ -5,7 +5,7 @@ In this repositories,I will implement some basic graphics project.
 # Ray Tracing
 
 ## 渲染效果展示
-![alt text](picture/图片1.png)
+![alt text](picture/camera_(2).gif)
 - 单张（1200*675）迭代累积10spp后效果(静止相机)
 
 ![alt text](picture/motion_camera.gif)
