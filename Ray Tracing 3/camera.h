@@ -114,8 +114,9 @@ class camera {
     }
 
 
+    // 渲染主函数
     void render(const hittable& world) {
-        initialize();
+        initialize(); // 初始化相机参数
 
         // 加载天空盒一次
         if (!load_skybox(skybox_filename)) {
