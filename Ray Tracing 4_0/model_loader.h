@@ -9,6 +9,9 @@
 #include <vector>
 #include <algorithm>
 #include <stdexcept>
+#include <fstream>
+#include <cctype>
+#include <cstdlib>
 
 #include <assimp/material.h>
 
@@ -45,6 +48,112 @@ inline std::string join_model_path(const std::string& base, const std::string& r
     return base + "/" + rel;
 }
 
+inline bool model_file_exists(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    return in.good();
+}
+
+inline std::string model_basename(const std::string& path) {
+    auto p = path.find_last_of("\\/");
+    if (p == std::string::npos) return path;
+    return path.substr(p + 1);
+}
+
+inline bool is_embedded_texture_ref(const std::string& ref, int& out_index) {
+    if (ref.size() < 2 || ref[0] != '*') return false;
+
+    char* end_ptr = nullptr;
+    long idx = std::strtol(ref.c_str() + 1, &end_ptr, 10);
+    if (end_ptr != ref.c_str() + ref.size()) return false;
+    if (idx < 0) return false;
+
+    out_index = static_cast<int>(idx);
+    return true;
+}
+
+inline std::string sanitize_ext(std::string ext) {
+    std::string out;
+    out.reserve(ext.size());
+    for (char c : ext) {
+        if (std::isalnum(static_cast<unsigned char>(c))) {
+            out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+        }
+    }
+    if (out.empty()) out = "png";
+    return out;
+}
+
+inline std::string extract_embedded_texture_to_file(
+    const aiScene* scene,
+    const std::string& model_dir,
+    const std::string& tex_ref
+) {
+    if (!scene) return "";
+
+    int tex_index = -1;
+    if (!is_embedded_texture_ref(tex_ref, tex_index)) return "";
+
+    const aiTexture* tex = scene->GetEmbeddedTexture(tex_ref.c_str());
+    if (!tex && tex_index >= 0 && static_cast<unsigned>(tex_index) < scene->mNumTextures) {
+        tex = scene->mTextures[tex_index];
+    }
+    if (!tex) return "";
+
+    std::string ext = (tex->mHeight == 0) ? sanitize_ext(tex->achFormatHint) : "ppm";
+    std::string out_path = join_model_path(model_dir, "__embedded_tex_" + std::to_string(tex_index) + "." + ext);
+
+    if (model_file_exists(out_path)) {
+        return out_path;
+    }
+
+    std::ofstream out(out_path, std::ios::binary);
+    if (!out) return "";
+
+    if (tex->mHeight == 0) {
+        out.write(reinterpret_cast<const char*>(tex->pcData), static_cast<std::streamsize>(tex->mWidth));
+    } else {
+        out << "P6\n" << tex->mWidth << " " << tex->mHeight << "\n255\n";
+        for (unsigned y = 0; y < tex->mHeight; ++y) {
+            for (unsigned x = 0; x < tex->mWidth; ++x) {
+                const aiTexel& p = tex->pcData[y * tex->mWidth + x];
+                unsigned char rgb[3] = { p.r, p.g, p.b };
+                out.write(reinterpret_cast<const char*>(rgb), 3);
+            }
+        }
+    }
+
+    return out.good() ? out_path : "";
+}
+
+inline std::string resolve_assimp_texture_path(
+    const aiScene* scene,
+    const std::string& model_dir,
+    const std::string& tex_ref
+) {
+    if (tex_ref.empty()) return "";
+
+    int embedded_index = -1;
+    if (is_embedded_texture_ref(tex_ref, embedded_index)) {
+        auto extracted = extract_embedded_texture_to_file(scene, model_dir, tex_ref);
+        if (!extracted.empty()) return extracted;
+    }
+
+    auto p0 = join_model_path(model_dir, tex_ref);
+    if (model_file_exists(p0)) return p0;
+
+    auto p1 = join_model_path(model_dir, "../" + tex_ref);
+    if (model_file_exists(p1)) return p1;
+
+    auto p2 = join_model_path(model_dir, "../textures/" + tex_ref);
+    if (model_file_exists(p2)) return p2;
+
+    auto p3 = join_model_path(model_dir, "../textures/" + model_basename(tex_ref));
+    if (model_file_exists(p3)) return p3;
+
+    // 返回默认拼接路径，便于保留原有日志定位行为。
+    return p0;
+}
+
 inline bool assimp_try_get_texture(const aiMaterial* mat, aiTextureType type, std::string& out_path) {
     aiString tex_path;
     if (mat->GetTexture(type, 0, &tex_path) == AI_SUCCESS) {
@@ -56,6 +165,7 @@ inline bool assimp_try_get_texture(const aiMaterial* mat, aiTextureType type, st
 
 inline std::shared_ptr<material> create_material_from_assimp(
     const aiMaterial* ai_mat,
+    const aiScene* scene,
     const std::string& model_dir,
     const std::shared_ptr<material>& fallback_mat
 ) {
@@ -92,9 +202,13 @@ inline std::shared_ptr<material> create_material_from_assimp(
 
     auto base_color = color(base_rgba.r, base_rgba.g, base_rgba.b);
     auto disney = std::shared_ptr<disney_material>();
+    auto make_tex = [&](const std::string& rel_path) {
+        auto resolved = resolve_assimp_texture_path(scene, model_dir, rel_path);
+        return make_shared<image_texture>(resolved.c_str());
+    };
 
     if (!base_tex_rel.empty()) {
-        auto base_tex = make_shared<image_texture>(join_model_path(model_dir, base_tex_rel).c_str());
+        auto base_tex = make_tex(base_tex_rel);
         disney = make_shared<disney_material>(
             base_tex,
             std::clamp(static_cast<double>(metallic), 0.0, 1.0),
@@ -115,20 +229,20 @@ inline std::shared_ptr<material> create_material_from_assimp(
     }
 
     if (!normal_tex_rel.empty()) {
-        disney->set_normal_texture(make_shared<image_texture>(join_model_path(model_dir, normal_tex_rel).c_str()));
+        disney->set_normal_texture(make_tex(normal_tex_rel));
     }
 
     if (!packed_mr_tex_rel.empty()) {
-        disney->set_metallic_roughness_texture(make_shared<image_texture>(join_model_path(model_dir, packed_mr_tex_rel).c_str()));
+        disney->set_metallic_roughness_texture(make_tex(packed_mr_tex_rel));
     } else if (!roughness_tex_rel.empty()) {
         // 对于分离贴图，优先粗糙度贴图。
-        disney->set_metallic_roughness_texture(make_shared<image_texture>(join_model_path(model_dir, roughness_tex_rel).c_str()));
+        disney->set_metallic_roughness_texture(make_tex(roughness_tex_rel));
     } else if (!metallic_tex_rel.empty()) {
-        disney->set_metallic_roughness_texture(make_shared<image_texture>(join_model_path(model_dir, metallic_tex_rel).c_str()));
+        disney->set_metallic_roughness_texture(make_tex(metallic_tex_rel));
     }
 
     if (!emissive_tex_rel.empty()) {
-        disney->set_emissive_texture(make_shared<image_texture>(join_model_path(model_dir, emissive_tex_rel).c_str()));
+        disney->set_emissive_texture(make_tex(emissive_tex_rel));
     }
 
     disney->set_emissive_factor(color(emissive_rgba.r, emissive_rgba.g, emissive_rgba.b));
@@ -160,7 +274,7 @@ inline std::shared_ptr<hittable> load_model_as_hittable(
     std::vector<std::shared_ptr<material>> imported_materials(scene->mNumMaterials, mat);
     if (opt.import_embedded_materials) {
         for (unsigned mi = 0; mi < scene->mNumMaterials; ++mi) {
-            imported_materials[mi] = create_material_from_assimp(scene->mMaterials[mi], model_dir, mat);
+            imported_materials[mi] = create_material_from_assimp(scene->mMaterials[mi], scene, model_dir, mat);
         }
     }
 

@@ -1047,8 +1047,84 @@ void feature_showcase_4_0() {
     cam.render(world, "feature_showcase_4_0.ppm");
 }
 
+// 复杂汽车 GLB 模型测试场景：
+// - 使用模型自带多材质与多贴图链路（Assimp 导入）
+// - 显式区域光采样（NEE + MIS）
+// - 地面与背景板增强车身反射表现
+void lamborghini_glb_scene() {
+    hittable_list world;
+    auto lights = make_shared<hittable_list>();
+
+    // 轻微格纹地面，便于观察阴影与接触关系
+    auto ground_tex = make_shared<checker_texture>(0.45, color(0.16, 0.16, 0.17), color(0.85, 0.85, 0.87));
+    world.add(make_shared<sphere>(point3(0, -1000, 0), 1000, make_shared<lambertian>(ground_tex)));
+
+    // 背景板：帮助显示车漆高光与轮廓边缘
+    auto back_plate_mat = make_shared<lambertian>(color(0.10, 0.11, 0.13));
+    world.add(make_shared<quad>(point3(-15, 0, -15), vec3(30, 0, 0), vec3(0, 10, 0), back_plate_mat));
+
+    // 主灯和轮廓灯（面光源）
+    auto key_light_mat = make_shared<diffuse_light>(color(20, 20, 20));
+    auto key_light = make_shared<quad>(point3(-5.0, 6.5, 4.0), vec3(8.0, 0, 0), vec3(0, 0, -6.0), key_light_mat);
+    world.add(key_light);
+    lights->add(key_light);
+
+    auto rim_light_mat = make_shared<diffuse_light>(color(7, 7, 7));
+    auto rim_light = make_shared<quad>(point3(7.0, 4.0, -8.0), vec3(0, 3.0, 0), vec3(-4.0, 0, 0), rim_light_mat);
+    world.add(rim_light);
+    lights->add(rim_light);
+
+    // 汽车模型：优先使用模型材质与贴图（包括 baseColor/normal/metallic-roughness/emissive）
+    ModelLoadOptions car_opt;
+    car_opt.scale = vec3(100.0, 100.0, 100.0);
+    car_opt.translate = vec3(0.0, 0.02, 0.0);
+    car_opt.center_model = true;
+    car_opt.flip_winding = false;
+    car_opt.import_embedded_materials = true;
+
+    auto fallback_car_mat = make_shared<disney_material>(color(0.80, 0.12, 0.08), 0.85, 0.20, 0.80, 0.20, 0.0);
+    auto car = load_model_as_hittable(
+        "models/lamborghini-fenomeno-2025-wwwvecarzcom/source/lamborghini_fenomeno_2025.glb",
+        fallback_car_mat,
+        car_opt
+    );
+    world.add(car);
+
+    // BVH 加速
+    world = hittable_list(make_shared<bvh_node>(world));
+
+    camera cam;
+    cam.aspect_ratio = 16.0 / 9.0;
+    cam.image_width = 1400;
+    cam.samples_per_pixel = 700;
+    cam.max_depth = 120;
+    cam.background = color(0.01, 0.01, 0.012);
+
+    // 三分之四视角，强调车头与侧面曲线
+    cam.vfov = 28;
+    cam.lookfrom = point3(6.5, 2.1, 8.8);
+    cam.lookat = point3(0.0, 1.0, 0.2);
+    cam.vup = vec3(0, 1, 0);
+    cam.defocus_angle = 0.0;
+
+    cam.enable_nee = true;
+    cam.enable_mis = true;
+    cam.light_sampler = lights;
+    cam.sample_world_for_direct_light = false;
+
+    cam.skybox_filename = "bg.png";
+    cam.sh_coeffs_filename = "bg_sh.txt";
+    cam.use_spherical_harmonics = false;
+    cam.enable_skybox = true;
+
+    cam.enable_multithreading = true;
+    cam.num_threads = std::thread::hardware_concurrency();
+
+    cam.render(world, "lamborghini_glb_scene.ppm");
+}
+
 int main() {
-    switch (14) {
+    switch (15) {
         case 1: bouncing_spheres();  break;
         case 2: checkered_spheres(); break;
         case 3: earth();             break;
@@ -1063,6 +1139,7 @@ int main() {
         case 12: test_model();       break;
         case 13: mix_scene();        break;
         case 14: feature_showcase_4_0(); break;
+        case 15: lamborghini_glb_scene(); break;
         default: final_scene(400,   250,  4); break;
     }
 }
